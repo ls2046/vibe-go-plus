@@ -1,0 +1,36 @@
+import { captureCurrentWindow } from './android-shot.uts'
+
+export function startAppAnnotation(sourcePage: string, sourceTitle: string): void {
+	startAnnotation(sourcePage, sourceTitle, 'app', '')
+}
+
+export function startWebAnnotation(sourcePage: string, sourceTitle: string, sourceUrl: string): void {
+	startAnnotation(sourcePage, sourceTitle, 'web', sourceUrl)
+}
+
+function startAnnotation(sourcePage: string, sourceTitle: string, sourceType: string, sourceUrl: string): void {
+	// #ifdef APP-ANDROID
+	captureCurrentWindow((result) => {
+		if (!result.ok) {
+			uni.showToast({ title: result.error.length > 0 ? result.error : '截图失败', icon: 'none' })
+			return
+		}
+		const params = [
+			'image=' + encodeURIComponent(result.path),
+			'sourceType=' + encodeURIComponent(sourceType),
+			'sourcePage=' + encodeURIComponent(sourcePage),
+			'sourceTitle=' + encodeURIComponent(sourceTitle),
+		]
+		if (sourceUrl.length > 0) {
+			params.push('sourceUrl=' + encodeURIComponent(sourceUrl))
+		}
+		uni.navigateTo({
+			url: '/pages/annotate/index?' + params.join('&'),
+		})
+	})
+	// #endif
+
+	// #ifndef APP-ANDROID
+	uni.showToast({ title: '当前平台暂不支持页面标注', icon: 'none' })
+	// #endif
+}

@@ -1,0 +1,19 @@
+let activeVoiceOwner = ''
+
+export function claimVoiceSession(owner: string): boolean {
+	if (activeVoiceOwner.length > 0 && activeVoiceOwner != owner) return false
+	activeVoiceOwner = owner
+	return true
+}
+
+export function releaseVoiceSession(owner: string): void {
+	if (activeVoiceOwner == owner) activeVoiceOwner = ''
+}
+
+export function isVoiceSessionActive(): boolean {
+	return activeVoiceOwner.length > 0
+}
+
+export function activeVoiceSessionOwner(): string {
+	return activeVoiceOwner
+}

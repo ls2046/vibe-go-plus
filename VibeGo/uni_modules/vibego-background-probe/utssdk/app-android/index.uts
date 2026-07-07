@@ -1,0 +1,1466 @@
+import Context from 'android.content.Context'
+import ContentValues from 'android.content.ContentValues'
+import SharedPreferences from 'android.content.SharedPreferences'
+import Editor from 'android.content.SharedPreferences.Editor'
+import Intent from 'android.content.Intent'
+import BroadcastReceiver from 'android.content.BroadcastReceiver'
+import Activity from 'android.app.Activity'
+import Service from 'android.app.Service'
+import AlarmManager from 'android.app.AlarmManager'
+import PendingIntent from 'android.app.PendingIntent'
+import Notification from 'android.app.Notification'
+import NotificationChannel from 'android.app.NotificationChannel'
+import NotificationManager from 'android.app.NotificationManager'
+import NotificationListenerService from 'android.service.notification.NotificationListenerService'
+import StatusBarNotification from 'android.service.notification.StatusBarNotification'
+import Build from 'android.os.Build'
+import Environment from 'android.os.Environment'
+import IBinder from 'android.os.IBinder'
+import Handler from 'android.os.Handler'
+import Looper from 'android.os.Looper'
+import PowerManager from 'android.os.PowerManager'
+import WakeLock from 'android.os.PowerManager.WakeLock'
+import Settings from 'android.provider.Settings'
+import MediaStore from 'android.provider.MediaStore'
+import PackageManager from 'android.content.pm.PackageManager'
+import Uri from 'android.net.Uri'
+import File from 'java.io.File'
+import FileOutputStream from 'java.io.FileOutputStream'
+import Bitmap from 'android.graphics.Bitmap'
+import PixelFormat from 'android.graphics.PixelFormat'
+import ImageReader from 'android.media.ImageReader'
+import MediaProjectionManager from 'android.media.projection.MediaProjectionManager'
+import MediaProjection from 'android.media.projection.MediaProjection'
+import MediaProjectionConfig from 'android.media.projection.MediaProjectionConfig'
+import VirtualDisplay from 'android.hardware.display.VirtualDisplay'
+import DisplayManager from 'android.hardware.display.DisplayManager'
+import WindowManager from 'android.view.WindowManager'
+import Ringtone from 'android.media.Ringtone'
+import RingtoneManager from 'android.media.RingtoneManager'
+import MediaPlayer from 'android.media.MediaPlayer'
+import AudioAttributes from 'android.media.AudioAttributes'
+import Thread from 'java.lang.Thread'
+import System from 'java.lang.System'
+import URL from 'java.net.URL'
+import HttpURLConnection from 'java.net.HttpURLConnection'
+import { ProbeStatus, ProjectionStatus, ProbeActionResult, ProjectionActionResult, ScreenCaptureFrameResult, RequestProbePermissions, OpenExactAlarmSettings, StartHeartbeat, StopHeartbeat, ScheduleAlarm, CancelAlarm, StopPlayback, ShowLocalNotification, ScheduleLocalNotification, CancelLocalNotification, GetProbeStatus, RequestProjectionConsent, GetProjectionStatus, CaptureProjectionFrame, StopProjectionSession } from '../interface.uts'
+
+const PREFS_NAME = 'vibego_background_probe'
+const CHANNEL_ID = 'vibego_background_probe'
+const LOCAL_CHANNEL_ID = 'vibego_local_messages'
+const NOTIFICATION_ID: Int = 9301
+const ALARM_REQUEST_CODE: Int = 9302
+const LOCAL_NOTIFICATION_ID: Int = 9303
+const LOCAL_NOTIFICATION_REQUEST_CODE: Int = 9304
+const ACTION_START_HEARTBEAT = 'vibego.background.START_HEARTBEAT'
+const ACTION_STOP_HEARTBEAT = 'vibego.background.STOP_HEARTBEAT'
+const ACTION_PLAY_ALARM = 'vibego.background.PLAY_ALARM'
+const ACTION_START_DELAYED_ALARM = 'vibego.background.START_DELAYED_ALARM'
+const ACTION_CANCEL_DELAYED_ALARM = 'vibego.background.CANCEL_DELAYED_ALARM'
+const ACTION_STOP_PLAYBACK = 'vibego.background.STOP_PLAYBACK'
+const ACTION_SHOW_LOCAL_NOTIFICATION = 'vibego.background.SHOW_LOCAL_NOTIFICATION'
+const ACTION_PREPARE_PROJECTION_SESSION = 'vibego.background.PREPARE_PROJECTION_SESSION'
+const ACTION_STOP_PROJECTION_SESSION = 'vibego.background.STOP_PROJECTION_SESSION'
+const EXTRA_INTERVAL_SEC = 'intervalSec'
+const EXTRA_SERVER_URL = 'serverUrl'
+const EXTRA_DELAY_SEC = 'delaySec'
+const EXTRA_NOTIFICATION_TITLE = 'notificationTitle'
+const EXTRA_NOTIFICATION_TEXT = 'notificationText'
+const PROJECTION_REQUEST_CODE: Int = 9411
+
+let heartbeatThread: ProbeHeartbeatThread | null = null
+let delayedAlarmThread: ProbeDelayedAlarmThread | null = null
+let activeRingtone: Ringtone | null = null
+let activeMediaPlayer: MediaPlayer | null = null
+let activeWakeLock: WakeLock | null = null
+let projectionActivityCallback: ScreenProjectionActivityCallback | null = null
+let pendingProjectionConsentDone: ((result: ProjectionActionResult) => void) | null = null
+let activeProjection: MediaProjection | null = null
+let activeProjectionStopCallback: ProjectionStopCallback | null = null
+let activeVirtualDisplay: VirtualDisplay | null = null
+let activeImageReader: ImageReader | null = null
+let projectionResultCode: Int = 0
+let projectionResultData: Intent | null = null
+let projectionWidth: Int = 0
+let projectionHeight: Int = 0
+let projectionDensityDpi: Int = 0
+
+function appContext(): Context | null {
+	return UTSAndroid.getAppContext()
+}
+
+function prefs(context: Context): SharedPreferences {
+	return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+}
+
+function nowText(): string {
+	return new Date().toISOString()
+}
+
+function normalizeServerUrl(serverUrl: string): string {
+	let value = serverUrl.trim()
+	while (value.endsWith('/')) {
+		value = value.substring(0, value.length - 1)
+	}
+	return value
+}
+
+function logLine(context: Context, message: string): void {
+	const p = prefs(context)
+	const oldLogs = p.getString('logs', '') ?? ''
+	let logs = nowText() + '  ' + message
+	if (oldLogs.length > 0) {
+		logs = logs + '\n' + oldLogs
+	}
+	if (logs.length > 6000) {
+		logs = logs.substring(0, 6000)
+	}
+	const editor: Editor = p.edit()
+	editor.putString('logs', logs)
+	editor.apply()
+}
+
+function logNotificationLine(context: Context, message: string): void {
+	const p = prefs(context)
+	const oldLogs = p.getString('notificationLogs', '') ?? ''
+	let logs = nowText() + '  ' + message
+	if (oldLogs.length > 0) {
+		logs = logs + '\n' + oldLogs
+	}
+	if (logs.length > 6000) {
+		logs = logs.substring(0, 6000)
+	}
+	const editor: Editor = p.edit()
+	editor.putString('notificationLogs', logs)
+	editor.apply()
+}
+
+function setPrefBool(context: Context, key: string, value: boolean): void {
+	const editor: Editor = prefs(context).edit()
+	editor.putBoolean(key, value)
+	editor.apply()
+}
+
+function setPrefString(context: Context, key: string, value: string): void {
+	const editor: Editor = prefs(context).edit()
+	editor.putString(key, value)
+	editor.apply()
+}
+
+function setPrefInt(context: Context, key: string, value: Int): void {
+	const editor: Editor = prefs(context).edit()
+	editor.putInt(key, value)
+	editor.apply()
+}
+
+function emptyProjectionStatus(): ProjectionStatus {
+	return {
+		captureSupported: true,
+		capturePermissionRequested: false,
+		projectionAuthorized: false,
+		projectionActive: false,
+		lastPath: '',
+		lastWidth: 0,
+		lastHeight: 0,
+		lastTimestamp: '',
+		lastError: '',
+		message: '未启动识屏会话',
+	}
+}
+
+function buildProjectionStatus(context: Context): ProjectionStatus {
+	const p = prefs(context)
+	return {
+		captureSupported: true,
+		capturePermissionRequested: p.getBoolean('projectionPermissionRequested', false),
+		projectionAuthorized: p.getBoolean('projectionAuthorized', false),
+		projectionActive: p.getBoolean('projectionActive', false),
+		lastPath: p.getString('projectionLastPath', '') ?? '',
+		lastWidth: p.getInt('projectionLastWidth', 0),
+		lastHeight: p.getInt('projectionLastHeight', 0),
+		lastTimestamp: p.getString('projectionLastTimestamp', '') ?? '',
+		lastError: p.getString('projectionLastError', '') ?? '',
+		message: p.getString('projectionMessage', '未启动识屏会话') ?? '未启动识屏会话',
+	}
+}
+
+function projectionActionResult(context: Context, ok: boolean, message: string): ProjectionActionResult {
+	return {
+		ok,
+		message,
+		status: buildProjectionStatus(context),
+	}
+}
+
+function projectionFrameResult(context: Context, ok: boolean, path: string, width: Int, height: Int, timestamp: string, error: string): ScreenCaptureFrameResult {
+	return {
+		ok,
+		path,
+		width,
+		height,
+		timestamp,
+		error,
+		status: buildProjectionStatus(context),
+	}
+}
+
+function setProjectionState(
+	context: Context,
+	requested: boolean,
+	authorized: boolean,
+	active: boolean,
+	message: string,
+	lastError: string,
+): void {
+	const editor: Editor = prefs(context).edit()
+	editor.putBoolean('projectionPermissionRequested', requested)
+	editor.putBoolean('projectionAuthorized', authorized)
+	editor.putBoolean('projectionActive', active)
+	editor.putString('projectionMessage', message)
+	editor.putString('projectionLastError', lastError)
+	editor.apply()
+}
+
+function setProjectionFrameMeta(context: Context, path: string, width: Int, height: Int, timestamp: string): void {
+	const editor: Editor = prefs(context).edit()
+	editor.putString('projectionLastPath', path)
+	editor.putInt('projectionLastWidth', width)
+	editor.putInt('projectionLastHeight', height)
+	editor.putString('projectionLastTimestamp', timestamp)
+	editor.apply()
+}
+
+function projectionNotificationText(context: Context): string {
+	const status = buildProjectionStatus(context)
+	if (status.projectionActive) return 'VibeGo 正在识屏'
+	if (status.capturePermissionRequested) return 'VibeGo 等待识屏授权'
+	if (status.projectionAuthorized) return 'VibeGo 识屏会话待命中'
+	return 'VibeGo 后台测试运行中'
+}
+
+function projectionServiceActive(context: Context): boolean {
+	const status = buildProjectionStatus(context)
+	return status.capturePermissionRequested || status.projectionAuthorized || status.projectionActive
+}
+
+function shouldKeepServiceAlive(context: Context): boolean {
+	const p = prefs(context)
+	return p.getBoolean('heartbeatActive', false) ||
+		p.getBoolean('playbackActive', false) ||
+		projectionServiceActive(context) ||
+		delayedAlarmThread != null
+}
+
+function stopForegroundIfIdle(service: Service): void {
+	if (shouldKeepServiceAlive(service)) return
+	service.stopForeground(true)
+	service.stopSelf()
+	logLine(service, '前台服务已空闲，自动停止')
+}
+
+function resolveProjectionMetrics(activity: Activity): void {
+	let width: Int = 0
+	let height: Int = 0
+	let density: Int = activity.getResources().getConfiguration().densityDpi
+	try {
+		const manager = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+		if (Build.VERSION.SDK_INT >= 30) {
+			const bounds = manager.getMaximumWindowMetrics().getBounds()
+			width = bounds.width()
+			height = bounds.height()
+		}
+	} catch (error) {
+		console.log('VibeGo resolveProjectionMetrics failed', error)
+	}
+	if (width <= 0 || height <= 0) {
+		const metrics = activity.getResources().getDisplayMetrics()
+		width = metrics.widthPixels
+		height = metrics.heightPixels
+		if (density <= 0) density = metrics.densityDpi
+	}
+	projectionWidth = width
+	projectionHeight = height
+	projectionDensityDpi = density > 0 ? density : 320
+}
+
+function notificationGranted(context: Context): boolean {
+	if (Build.VERSION.SDK_INT < 33) return true
+	if (context.getApplicationInfo().targetSdkVersion < 33) return true
+	return context.checkSelfPermission('android.permission.POST_NOTIFICATIONS') == PackageManager.PERMISSION_GRANTED
+}
+
+function exactAlarmGranted(context: Context): boolean {
+	if (Build.VERSION.SDK_INT < 31) return true
+	const alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+	return alarm.canScheduleExactAlarms()
+}
+
+function pendingIntentFlags(): Int {
+	if (Build.VERSION.SDK_INT >= 23) {
+		return PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+	}
+	return PendingIntent.FLAG_UPDATE_CURRENT
+}
+
+function serviceIntent(context: Context, action: string): Intent {
+	const intent = new Intent(context, ProbeForegroundService().javaClass)
+	intent.setAction(action)
+	return intent
+}
+
+function alarmPendingIntent(context: Context): PendingIntent {
+	const intent = serviceIntent(context, ACTION_PLAY_ALARM)
+	if (Build.VERSION.SDK_INT >= 26) {
+		return PendingIntent.getForegroundService(context, ALARM_REQUEST_CODE, intent, pendingIntentFlags())
+	}
+	return PendingIntent.getService(context, ALARM_REQUEST_CODE, intent, pendingIntentFlags())
+}
+
+function startProbeService(context: Context, intent: Intent): boolean {
+	try {
+		if (Build.VERSION.SDK_INT >= 26) {
+			context.startForegroundService(intent)
+		} else {
+			context.startService(intent)
+		}
+		return true
+	} catch (error) {
+		console.log('VibeGo start service failed', error)
+		logLine(context, '前台服务启动失败：请确认使用自定义基座，标准基座不会合并插件 Service/Receiver')
+		return false
+	}
+}
+
+function ensureNotificationChannel(context: Context): void {
+	if (Build.VERSION.SDK_INT < 26) return
+	const manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+	const channel = new NotificationChannel(CHANNEL_ID, 'VibeGo 后台测试', NotificationManager.IMPORTANCE_LOW)
+	channel.setDescription('VibeGo 锁屏后台能力探针')
+	manager.createNotificationChannel(channel)
+	const localChannel = new NotificationChannel(LOCAL_CHANNEL_ID, 'VibeGo 本地消息', NotificationManager.IMPORTANCE_DEFAULT)
+	localChannel.setDescription('VibeGo 本地通知中心')
+	manager.createNotificationChannel(localChannel)
+}
+
+function buildNotification(context: Context, text: string): Notification {
+	ensureNotificationChannel(context)
+	let builder: Notification.Builder
+	if (Build.VERSION.SDK_INT >= 26) {
+		builder = new Notification.Builder(context, CHANNEL_ID)
+	} else {
+		builder = new Notification.Builder(context)
+	}
+	builder.setContentTitle(text.indexOf('识屏') >= 0 ? 'VibeGo 正在识屏' : 'VibeGo 后台测试运行中')
+	builder.setContentText(text)
+	builder.setSmallIcon(android.R.drawable.ic_dialog_info)
+	builder.setOngoing(true)
+	const launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName())
+	if (launchIntent != null) {
+		launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		const contentIntent = PendingIntent.getActivity(context, NOTIFICATION_ID, launchIntent, pendingIntentFlags())
+		builder.setContentIntent(contentIntent)
+	}
+	return builder.build()
+}
+
+class ScreenProjectionActivityCallback extends UniActivityCallback {
+	constructor() {
+		super()
+	}
+
+	override onActivityResult(_params: UniActivityParams, requestCode: Int, resultCode: Int, data: Intent | null): void {
+		if (requestCode != PROJECTION_REQUEST_CODE) return
+		const context = appContext()
+		if (context == null) {
+			const done = pendingProjectionConsentDone
+			pendingProjectionConsentDone = null
+			if (done != null) {
+				const result: ProjectionActionResult = {
+					ok: false,
+					message: 'Context 不可用',
+					status: emptyProjectionStatus(),
+				}
+				done(result)
+			}
+			return
+		}
+		if (resultCode != Activity.RESULT_OK || data == null) {
+			releaseProjectionResources(context, true, '已取消屏幕采集授权', '')
+			const done = pendingProjectionConsentDone
+			pendingProjectionConsentDone = null
+			if (done != null) done(projectionActionResult(context, false, '已取消屏幕采集授权'))
+			return
+		}
+		if (!initializeProjectionAuthorization(context, resultCode, data)) {
+			const done = pendingProjectionConsentDone
+			pendingProjectionConsentDone = null
+			if (done != null) done(projectionActionResult(context, false, buildProjectionStatus(context).lastError))
+			return
+		}
+		const done = pendingProjectionConsentDone
+		pendingProjectionConsentDone = null
+		if (done != null) done(projectionActionResult(context, true, '屏幕采集已授权，可开始抓取'))
+	}
+}
+
+class ProjectionStopCallback extends MediaProjection.Callback {
+	private projectionContext: Context
+
+	constructor(context: Context) {
+		super()
+		this.projectionContext = context
+	}
+
+	override onStop(): void {
+		releaseProjectionResources(this.projectionContext, true, '系统已停止识屏会话，请重新授权', '系统已停止识屏会话')
+	}
+}
+
+function ensureProjectionActivityCallback(): void {
+	if (projectionActivityCallback != null) return
+	const callback = new ScreenProjectionActivityCallback()
+	projectionActivityCallback = callback
+	UTSAndroid.onActivityCallback(callback)
+}
+
+function projectionManager(activity: Activity): MediaProjectionManager {
+	return activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+}
+
+function projectionConsentIntent(activity: Activity): Intent {
+	const manager = projectionManager(activity)
+	if (Build.VERSION.SDK_INT >= 34) {
+		return manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+	}
+	return manager.createScreenCaptureIntent()
+}
+
+function releaseProjectionDisplay(): void {
+	if (activeVirtualDisplay != null) {
+		try {
+			activeVirtualDisplay?.release()
+		} catch (error) {
+			console.log('VibeGo release virtual display failed', error)
+		}
+		activeVirtualDisplay = null
+	}
+	if (activeImageReader != null) {
+		try {
+			activeImageReader?.close()
+		} catch (error) {
+			console.log('VibeGo close image reader failed', error)
+		}
+		activeImageReader = null
+	}
+}
+
+function releaseProjectionResources(context: Context, clearAuthorization: boolean, message: string, lastError: string): void {
+	releaseProjectionDisplay()
+	if (activeProjection != null) {
+		try {
+			const callback = activeProjectionStopCallback
+			if (callback != null) {
+				activeProjection?.unregisterCallback(callback)
+			}
+		} catch (error) {
+			console.log('VibeGo unregister projection callback failed', error)
+		}
+		try {
+			activeProjection?.stop()
+		} catch (error) {
+			console.log('VibeGo stop projection failed', error)
+		}
+		activeProjection = null
+	}
+	activeProjectionStopCallback = null
+	if (clearAuthorization) {
+		projectionResultCode = 0
+		projectionResultData = null
+	}
+	setProjectionState(context, false, !clearAuthorization && projectionResultData != null, false, message, lastError)
+	if (!shouldKeepServiceAlive(context)) {
+		try {
+			context.stopService(new Intent(context, ProbeForegroundService().javaClass))
+		} catch (error) {
+			console.log('VibeGo stop idle projection service failed', error)
+		}
+	}
+}
+
+function initializeProjectionAuthorization(context: Context, resultCode: Int, data: Intent): boolean {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		setProjectionState(context, false, false, false, 'Activity 不可用', 'Activity 不可用')
+		return false
+	}
+	try {
+		releaseProjectionDisplay()
+		if (activeProjection != null) {
+			try {
+				activeProjection?.stop()
+			} catch (_) {}
+			activeProjection = null
+		}
+		resolveProjectionMetrics(activity)
+		projectionResultCode = resultCode
+		projectionResultData = data
+		const projection = projectionManager(activity).getMediaProjection(resultCode, data)
+		activeProjection = projection
+		const callback = new ProjectionStopCallback(context.getApplicationContext())
+		activeProjectionStopCallback = callback
+		projection.registerCallback(callback, new Handler(Looper.getMainLooper()))
+		setProjectionState(context, false, true, false, '识屏授权已完成，等待抓取当前屏幕', '')
+		logLine(context, 'MediaProjection 授权已完成')
+		return true
+	} catch (error) {
+		console.log('VibeGo initialize projection failed', error)
+		releaseProjectionResources(context, true, '识屏授权初始化失败', '识屏授权初始化失败')
+		return false
+	}
+}
+
+function ensureProjectionSession(context: Context): boolean {
+	if (activeProjection != null && activeVirtualDisplay != null && activeImageReader != null) {
+		return true
+	}
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		setProjectionState(context, false, false, false, 'Activity 不可用', 'Activity 不可用')
+		return false
+	}
+	const projection = activeProjection
+	if (projection == null) {
+		setProjectionState(context, false, false, false, '请先完成屏幕采集授权', '请先完成屏幕采集授权')
+		return false
+	}
+	resolveProjectionMetrics(activity)
+	if (projectionWidth <= 0 || projectionHeight <= 0) {
+		setProjectionState(context, false, true, false, '屏幕尺寸不可用', '屏幕尺寸不可用')
+		return false
+	}
+	try {
+		const reader = ImageReader.newInstance(projectionWidth, projectionHeight, PixelFormat.RGBA_8888, 2)
+		const virtualDisplay = projection.createVirtualDisplay(
+			'VibeGoProjection',
+			projectionWidth,
+			projectionHeight,
+			projectionDensityDpi,
+			DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+			reader.getSurface(),
+			null,
+			null,
+		)
+		activeImageReader = reader
+		activeVirtualDisplay = virtualDisplay
+		setProjectionState(context, false, true, true, '识屏会话已启动，可重复抓取当前屏幕', '')
+		logLine(context, 'MediaProjection 会话已启动')
+		return true
+	} catch (error) {
+		console.log('VibeGo ensure projection session failed', error)
+		releaseProjectionDisplay()
+		setProjectionState(context, false, true, false, '创建识屏会话失败', '创建识屏会话失败')
+		return false
+	}
+}
+
+function saveProjectionBitmap(context: Context, bitmap: Bitmap): ScreenCaptureFrameResult {
+	try {
+		const dir = new File(context.getCacheDir(), 'vibego-shots')
+		if (!dir.exists()) dir.mkdirs()
+		const fileName = 'projection-' + Date.now().toString() + '.png'
+		const file = new File(dir, fileName)
+		const output = new FileOutputStream(file)
+		bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+		output.flush()
+		output.close()
+		const galleryPath = saveProjectionBitmapToGallery(context, bitmap, fileName)
+		const timestamp = nowText()
+		setProjectionFrameMeta(context, file.getAbsolutePath(), bitmap.getWidth(), bitmap.getHeight(), timestamp)
+		if (galleryPath.length > 0) {
+			setProjectionState(context, false, true, true, '已抓取当前屏幕，已保存到系统相册 Pictures/VibeGo', '')
+			logLine(context, '识屏抓图成功: ' + file.getAbsolutePath() + ' · gallery=' + galleryPath)
+		} else {
+			setProjectionState(context, false, true, true, '已抓取当前屏幕，但写入系统相册失败', '')
+			logLine(context, '识屏抓图成功但相册写入失败: ' + file.getAbsolutePath())
+		}
+		return projectionFrameResult(context, true, file.getAbsolutePath(), bitmap.getWidth(), bitmap.getHeight(), timestamp, '')
+	} catch (error) {
+		console.log('VibeGo save projection bitmap failed', error)
+		setProjectionState(context, false, true, true, '识屏图片保存失败', '识屏图片保存失败')
+		return projectionFrameResult(context, false, '', 0, 0, '', '识屏图片保存失败')
+	}
+}
+
+function saveProjectionBitmapToGallery(context: Context, bitmap: Bitmap, fileName: string): string {
+	try {
+		if (Build.VERSION.SDK_INT >= 29) {
+			const resolver = context.getContentResolver()
+			const values = new ContentValues()
+			values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+			values.put(MediaStore.Images.Media.MIME_TYPE, 'image/png')
+			values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + '/VibeGo')
+			values.put(MediaStore.Images.Media.IS_PENDING, 1)
+			const uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+			if (uri == null) return ''
+			const galleryOutput = resolver.openOutputStream(uri)
+			if (galleryOutput == null) {
+				resolver.delete(uri, null, null)
+				return ''
+			}
+			const saved = bitmap.compress(Bitmap.CompressFormat.PNG, 100, galleryOutput)
+			galleryOutput.flush()
+			galleryOutput.close()
+			if (!saved) {
+				resolver.delete(uri, null, null)
+				return ''
+			}
+			const completeValues = new ContentValues()
+			completeValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+			resolver.update(uri, completeValues, null, null)
+			return uri.toString()
+		}
+
+		const picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+		const galleryDir = new File(picturesDir, 'VibeGo')
+		if (!galleryDir.exists()) galleryDir.mkdirs()
+		const galleryFile = new File(galleryDir, fileName)
+		const galleryOutput = new FileOutputStream(galleryFile)
+		const saved = bitmap.compress(Bitmap.CompressFormat.PNG, 100, galleryOutput)
+		galleryOutput.flush()
+		galleryOutput.close()
+		if (!saved) return ''
+		const scanIntent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+		scanIntent.setData(Uri.fromFile(galleryFile))
+		context.sendBroadcast(scanIntent)
+		return galleryFile.getAbsolutePath()
+	} catch (error) {
+		console.log('VibeGo save projection bitmap to gallery failed', error)
+		return ''
+	}
+}
+
+function captureProjectionBitmap(context: Context): ScreenCaptureFrameResult {
+	if (!ensureProjectionSession(context)) {
+		const status = buildProjectionStatus(context)
+		return projectionFrameResult(context, false, '', 0, 0, '', status.lastError.length > 0 ? status.lastError : status.message)
+	}
+	const reader = activeImageReader
+	if (reader == null) {
+		setProjectionState(context, false, true, false, '识屏读取器不可用', '识屏读取器不可用')
+		return projectionFrameResult(context, false, '', 0, 0, '', '识屏读取器不可用')
+	}
+	let image = reader.acquireLatestImage()
+	for (let attempt: Int = 0; attempt < 6; attempt++) {
+		if (image != null) break
+		try {
+			Thread.sleep(80)
+		} catch (_) {}
+		image = reader.acquireLatestImage()
+	}
+	if (image == null) {
+		setProjectionState(context, false, true, true, '未获取到屏幕帧，请重试', '未获取到屏幕帧，请重试')
+		return projectionFrameResult(context, false, '', 0, 0, '', '未获取到屏幕帧，请重试')
+	}
+	try {
+		const plane = image.getPlanes()[0]
+		const buffer = plane.getBuffer()
+		const pixelStride = plane.getPixelStride()
+		const rowStride = plane.getRowStride()
+		const rowPadding = rowStride - pixelStride * projectionWidth
+		const bitmap = Bitmap.createBitmap(projectionWidth + rowPadding / pixelStride, projectionHeight, Bitmap.Config.ARGB_8888)
+		buffer.rewind()
+		bitmap.copyPixelsFromBuffer(buffer)
+		const cropped = Bitmap.createBitmap(bitmap, 0, 0, projectionWidth, projectionHeight)
+		bitmap.recycle()
+		const result = saveProjectionBitmap(context, cropped)
+		cropped.recycle()
+		return result
+	} catch (error) {
+		console.log('VibeGo capture projection frame failed', error)
+		setProjectionState(context, false, true, true, '屏幕帧转换失败', '屏幕帧转换失败')
+		return projectionFrameResult(context, false, '', 0, 0, '', '屏幕帧转换失败')
+	} finally {
+		try {
+			image.close()
+		} catch (_) {}
+	}
+}
+
+function localNotificationPendingIntent(context: Context): PendingIntent | null {
+	const launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName())
+	if (launchIntent == null) return null
+	launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+	launchIntent.setAction(Intent.ACTION_VIEW)
+	launchIntent.setData(Uri.parse('vibego://notification?source=local'))
+	return PendingIntent.getActivity(context, LOCAL_NOTIFICATION_ID, launchIntent, pendingIntentFlags())
+}
+
+function localNotificationAlarmPendingIntent(context: Context, title: string, text: string): PendingIntent {
+	const intent = new Intent(context, LocalNotificationReceiver().javaClass)
+	intent.setAction(ACTION_SHOW_LOCAL_NOTIFICATION)
+	intent.putExtra(EXTRA_NOTIFICATION_TITLE, title)
+	intent.putExtra(EXTRA_NOTIFICATION_TEXT, text)
+	return PendingIntent.getBroadcast(context, LOCAL_NOTIFICATION_REQUEST_CODE, intent, pendingIntentFlags())
+}
+
+function buildLocalNotification(context: Context, title: string, text: string): Notification {
+	ensureNotificationChannel(context)
+	let builder: Notification.Builder
+	if (Build.VERSION.SDK_INT >= 26) {
+		builder = new Notification.Builder(context, LOCAL_CHANNEL_ID)
+	} else {
+		builder = new Notification.Builder(context)
+	}
+	builder.setContentTitle(title)
+	builder.setContentText(text)
+	builder.setSmallIcon(android.R.drawable.ic_dialog_info)
+	builder.setAutoCancel(true)
+	const contentIntent = localNotificationPendingIntent(context)
+	if (contentIntent != null) {
+		builder.setContentIntent(contentIntent)
+	}
+	return builder.build()
+}
+
+function showLocalNotificationNow(context: Context, title: string, text: string): void {
+	const manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+	manager.notify(LOCAL_NOTIFICATION_ID, buildLocalNotification(context, title, text))
+	setPrefString(context, 'lastLocalNotificationAt', nowText())
+	setPrefString(context, 'lastLocalNotificationTitle', title)
+	setPrefString(context, 'lastLocalNotificationText', text)
+	logLine(context, '本地通知已发送: ' + title + ' · ' + text)
+}
+
+function cancelLocalNotificationNow(context: Context): void {
+	const alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+	alarm.cancel(localNotificationAlarmPendingIntent(context, '', ''))
+	const manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+	manager.cancel(LOCAL_NOTIFICATION_ID)
+	logLine(context, '已取消本地通知和定时通知')
+}
+
+function performHealthCheck(context: Context, serverUrl: string): void {
+	const base = normalizeServerUrl(serverUrl)
+	if (base.length == 0) {
+		setPrefString(context, 'lastHeartbeatStatus', 'serverUrl empty')
+		logLine(context, '心跳失败: serverUrl empty')
+		return
+	}
+	try {
+		const url = new URL(base + '/healthz')
+		const conn = url.openConnection() as HttpURLConnection
+		conn.setRequestMethod('GET')
+		conn.setConnectTimeout(5000)
+		conn.setReadTimeout(5000)
+		const code = conn.getResponseCode()
+		conn.disconnect()
+		const status = 'HTTP ' + code.toString()
+		setPrefString(context, 'lastHeartbeatAt', nowText())
+		setPrefString(context, 'lastHeartbeatStatus', status)
+		logLine(context, '心跳 ' + status + '  ' + base + '/healthz')
+	} catch (error) {
+		console.log('VibeGo heartbeat failed', error)
+		setPrefString(context, 'lastHeartbeatAt', nowText())
+		setPrefString(context, 'lastHeartbeatStatus', 'request failed')
+		logLine(context, '心跳失败: request failed')
+	}
+}
+
+function stopHeartbeatThread(context: Context): void {
+	if (heartbeatThread != null) {
+		heartbeatThread?.requestStop()
+		heartbeatThread = null
+	}
+	setPrefBool(context, 'heartbeatActive', false)
+	logLine(context, '已停止前台心跳服务')
+}
+
+function startHeartbeatThread(context: Context, intervalSec: Int, serverUrl: string): void {
+	stopHeartbeatThread(context)
+	const safeInterval = intervalSec < 3 ? 3 : intervalSec
+	const thread = new ProbeHeartbeatThread(context.getApplicationContext(), safeInterval, serverUrl)
+	heartbeatThread = thread
+	setPrefBool(context, 'heartbeatActive', true)
+	logLine(context, '开始前台心跳: ' + safeInterval.toString() + 's')
+	thread.start()
+}
+
+function acquireWakeLock(context: Context, timeoutMs: Long): void {
+	try {
+		if (activeWakeLock != null) {
+			const oldLock = activeWakeLock
+			if (oldLock != null && oldLock.isHeld()) {
+				oldLock.release()
+			}
+			activeWakeLock = null
+		}
+		const powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+		const wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, 'VibeGo:BackgroundProbe')
+		wakeLock.setReferenceCounted(false)
+		wakeLock.acquire(timeoutMs)
+		activeWakeLock = wakeLock
+		logLine(context, '已获取部分唤醒锁 ' + timeoutMs.toString() + 'ms')
+	} catch (error) {
+		console.log('VibeGo wakelock acquire failed', error)
+		logLine(context, '部分唤醒锁获取失败')
+	}
+}
+
+function releaseWakeLock(context: Context): void {
+	try {
+		if (activeWakeLock != null) {
+			const wakeLock = activeWakeLock
+			if (wakeLock != null && wakeLock.isHeld()) {
+				wakeLock.release()
+			}
+			activeWakeLock = null
+			logLine(context, '已释放部分唤醒锁')
+		}
+	} catch (error) {
+		console.log('VibeGo wakelock release failed', error)
+	}
+}
+
+function stopDelayedAlarmThread(context: Context): void {
+	if (delayedAlarmThread != null) {
+		delayedAlarmThread?.requestStop()
+		delayedAlarmThread = null
+	}
+	logLine(context, '已停止前台服务倒计时闹钟')
+}
+
+function startDelayedAlarmThread(context: Context, delaySec: Int): void {
+	stopDelayedAlarmThread(context)
+	const safeDelay: Int = delaySec < 5 ? 5 : delaySec
+	acquireWakeLock(context, ((safeDelay + 180) * 1000).toLong())
+	const thread = new ProbeDelayedAlarmThread(context.getApplicationContext(), safeDelay)
+	delayedAlarmThread = thread
+	logLine(context, '前台服务倒计时闹钟启动: ' + safeDelay.toString() + 's')
+	thread.start()
+}
+
+function defaultMusicUri(): Uri | null {
+	let uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+	if (uri == null) {
+		uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+	}
+	if (uri == null) {
+		uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+	}
+	return uri
+}
+
+function stopMediaPlayer(context: Context): void {
+	try {
+		if (activeMediaPlayer != null) {
+			const player = activeMediaPlayer
+			if (player != null) {
+				try {
+					player.stop()
+				} catch (stopError) {
+					console.log('VibeGo media stop ignored', stopError)
+				}
+				player.reset()
+				player.release()
+			}
+			activeMediaPlayer = null
+			logLine(context, '已释放 MediaPlayer')
+		}
+	} catch (error) {
+		console.log('VibeGo stop media player failed', error)
+	}
+}
+
+function playScheduledMusic(context: Context): void {
+	try {
+		stopMediaPlayer(context)
+		if (activeRingtone != null) {
+			activeRingtone?.stop()
+			activeRingtone = null
+		}
+		const uri = defaultMusicUri()
+		if (uri == null) {
+			logLine(context, '系统音乐/铃声 URI 不可用，降级到 Ringtone')
+			playSystemAlarmFallback(context)
+			return
+		}
+		const player = new MediaPlayer()
+		if (Build.VERSION.SDK_INT >= 21) {
+			const attrs = new AudioAttributes.Builder()
+				.setUsage(AudioAttributes.USAGE_ALARM)
+				.setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+				.build()
+			player.setAudioAttributes(attrs)
+		}
+		player.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
+		player.setDataSource(context, uri)
+		player.setLooping(true)
+		player.prepare()
+		player.start()
+		activeMediaPlayer = player
+		setPrefString(context, 'lastAlarmAt', nowText())
+		setPrefBool(context, 'playbackActive', true)
+		logLine(context, '定时音乐已触发，MediaPlayer 开始循环播放: ' + uri.toString())
+	} catch (error) {
+		console.log('VibeGo scheduled music failed', error)
+		logLine(context, 'MediaPlayer 播放失败，降级到 Ringtone')
+		playSystemAlarmFallback(context)
+	}
+}
+
+function playSystemAlarmFallback(context: Context): void {
+	try {
+		if (activeRingtone != null) {
+			activeRingtone?.stop()
+			activeRingtone = null
+		}
+		let uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+		if (uri == null) {
+			uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+		}
+		if (uri == null) {
+			logLine(context, '系统铃声不可用')
+			setPrefBool(context, 'playbackActive', false)
+			return
+		}
+		const ringtone = RingtoneManager.getRingtone(context, uri)
+		if (ringtone == null) {
+			logLine(context, 'Ringtone 创建失败')
+			setPrefBool(context, 'playbackActive', false)
+			return
+		}
+		if (Build.VERSION.SDK_INT >= 21) {
+			const attrs = new AudioAttributes.Builder()
+				.setUsage(AudioAttributes.USAGE_ALARM)
+				.setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+				.build()
+			ringtone.setAudioAttributes(attrs)
+		}
+		activeRingtone = ringtone
+		ringtone.play()
+		setPrefString(context, 'lastAlarmAt', nowText())
+		setPrefBool(context, 'playbackActive', true)
+		logLine(context, '兜底播放系统铃声')
+	} catch (error) {
+		console.log('VibeGo alarm playback failed', error)
+		setPrefBool(context, 'playbackActive', false)
+		logLine(context, '闹钟播放失败')
+	}
+}
+
+function playSystemAlarm(context: Context): void {
+	playScheduledMusic(context)
+}
+
+function stopAlarmPlayback(context: Context): void {
+	stopDelayedAlarmThread(context)
+	stopMediaPlayer(context)
+	try {
+		if (activeRingtone != null) {
+			activeRingtone?.stop()
+			activeRingtone = null
+		}
+	} catch (error) {
+		console.log('VibeGo stop playback failed', error)
+	}
+	setPrefBool(context, 'playbackActive', false)
+	releaseWakeLock(context)
+	logLine(context, '已停止音乐/铃声播放')
+}
+
+function buildStatus(context: Context): ProbeStatus {
+	const p = prefs(context)
+	const rawLogs = p.getString('logs', '') ?? ''
+	const logs = new Array<string>()
+	if (rawLogs.length > 0) {
+		const parts = rawLogs.split('\n')
+		for (let index: Int = 0; index < parts.length; index++) {
+			if (parts[index].length > 0) {
+				logs.push(parts[index])
+			}
+		}
+	}
+	return {
+		notificationGranted: notificationGranted(context),
+		exactAlarmGranted: exactAlarmGranted(context),
+		heartbeatActive: p.getBoolean('heartbeatActive', false),
+		playbackActive: p.getBoolean('playbackActive', false),
+		lastHeartbeatAt: p.getString('lastHeartbeatAt', '') ?? '',
+		lastHeartbeatStatus: p.getString('lastHeartbeatStatus', '') ?? '',
+		lastAlarmAt: p.getString('lastAlarmAt', '') ?? '',
+		lastLocalNotificationAt: p.getString('lastLocalNotificationAt', '') ?? '',
+		lastLocalNotificationTitle: p.getString('lastLocalNotificationTitle', '') ?? '',
+		lastLocalNotificationText: p.getString('lastLocalNotificationText', '') ?? '',
+		logs,
+	}
+}
+
+function emptyStatus(): ProbeStatus {
+	return {
+		notificationGranted: false,
+		exactAlarmGranted: false,
+		heartbeatActive: false,
+		playbackActive: false,
+		lastHeartbeatAt: '',
+		lastHeartbeatStatus: '',
+		lastAlarmAt: '',
+		lastLocalNotificationAt: '',
+		lastLocalNotificationTitle: '',
+		lastLocalNotificationText: '',
+		logs: new Array<string>(),
+	}
+}
+
+function actionResult(context: Context, ok: boolean, message: string): ProbeActionResult {
+	return {
+		ok,
+		message,
+		status: buildStatus(context),
+	}
+}
+
+class ProbeHeartbeatThread extends Thread {
+	private running: boolean = true
+	private probeContext: Context
+	private intervalSec: Int
+	private serverUrl: string
+
+	constructor(context: Context, intervalSec: Int, serverUrl: string) {
+		super()
+		this.probeContext = context
+		this.intervalSec = intervalSec
+		this.serverUrl = serverUrl
+	}
+
+	requestStop(): void {
+		this.running = false
+		this.interrupt()
+	}
+
+	override run(): void {
+		while (this.running) {
+			performHealthCheck(this.probeContext, this.serverUrl)
+			try {
+				Thread.sleep((this.intervalSec * 1000).toLong())
+			} catch (error) {
+				console.log('VibeGo heartbeat sleep interrupted', error)
+			}
+		}
+	}
+}
+
+class ProbeDelayedAlarmThread extends Thread {
+	private running: boolean = true
+	private probeContext: Context
+	private delaySec: Int
+
+	constructor(context: Context, delaySec: Int) {
+		super()
+		this.probeContext = context
+		this.delaySec = delaySec
+	}
+
+	requestStop(): void {
+		this.running = false
+		this.interrupt()
+	}
+
+	override run(): void {
+		try {
+			Thread.sleep((this.delaySec * 1000).toLong())
+		} catch (error) {
+			console.log('VibeGo delayed alarm sleep interrupted', error)
+		}
+		if (this.running) {
+			logLine(this.probeContext, '前台服务倒计时到点，准备播放定时音乐')
+			playSystemAlarm(this.probeContext)
+		}
+	}
+}
+
+export class ProbeForegroundService extends Service {
+	constructor() {
+		super()
+	}
+
+	override onCreate(): void {
+		super.onCreate()
+		ensureNotificationChannel(this)
+	}
+
+	override onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+		const action = intent.getAction() ?? ''
+		const notificationText = action == ACTION_PREPARE_PROJECTION_SESSION || action == ACTION_STOP_PROJECTION_SESSION || projectionServiceActive(this)
+			? projectionNotificationText(this)
+			: '锁屏后台能力探针'
+		this.startForeground(NOTIFICATION_ID, buildNotification(this, notificationText))
+		if (action == ACTION_START_HEARTBEAT) {
+			const intervalSec = intent?.getIntExtra(EXTRA_INTERVAL_SEC, 10) ?? 10
+			const serverUrl = intent?.getStringExtra(EXTRA_SERVER_URL) ?? ''
+			startHeartbeatThread(this, intervalSec, serverUrl)
+		} else if (action == ACTION_STOP_HEARTBEAT) {
+			stopHeartbeatThread(this)
+			stopForegroundIfIdle(this)
+		} else if (action == ACTION_PLAY_ALARM) {
+			logLine(this, 'AlarmManager 到点，启动前台服务播放定时音乐')
+			playSystemAlarm(this)
+		} else if (action == ACTION_START_DELAYED_ALARM) {
+			const delaySec = intent?.getIntExtra(EXTRA_DELAY_SEC, 60) ?? 60
+			startDelayedAlarmThread(this, delaySec)
+		} else if (action == ACTION_CANCEL_DELAYED_ALARM) {
+			stopDelayedAlarmThread(this)
+			releaseWakeLock(this)
+			stopForegroundIfIdle(this)
+		} else if (action == ACTION_STOP_PLAYBACK) {
+			stopAlarmPlayback(this)
+			stopForegroundIfIdle(this)
+		} else if (action == ACTION_PREPARE_PROJECTION_SESSION) {
+			logLine(this, '识屏前台服务已就绪，等待系统授权结果')
+		} else if (action == ACTION_STOP_PROJECTION_SESSION) {
+			releaseProjectionResources(this, true, '识屏会话已结束', '')
+		} else {
+			logLine(this, '前台服务启动')
+		}
+		return Service.START_STICKY
+	}
+
+	override onBind(intent: Intent): IBinder | null {
+		return null
+	}
+
+	override onDestroy(): void {
+		stopHeartbeatThread(this)
+		stopAlarmPlayback(this)
+		releaseProjectionResources(this, true, '识屏会话已结束', '')
+		releaseWakeLock(this)
+		super.onDestroy()
+	}
+}
+
+export class AlarmReceiver extends BroadcastReceiver {
+	constructor() {
+		super()
+	}
+
+	override onReceive(context: Context, intent: Intent): void {
+		logLine(context, 'AlarmReceiver 收到唤醒事件')
+		const service = serviceIntent(context, ACTION_PLAY_ALARM)
+		startProbeService(context, service)
+	}
+}
+
+export class LocalNotificationReceiver extends BroadcastReceiver {
+	constructor() {
+		super()
+	}
+
+	override onReceive(context: Context, intent: Intent): void {
+		const title = intent.getStringExtra(EXTRA_NOTIFICATION_TITLE) ?? 'VibeGo'
+		const text = intent.getStringExtra(EXTRA_NOTIFICATION_TEXT) ?? '你有一条新的本地消息'
+		showLocalNotificationNow(context, title, text)
+	}
+}
+
+export class VibeGoNotificationListenerService extends NotificationListenerService {
+	constructor() {
+		super()
+	}
+
+	override onListenerConnected(): void {
+		super.onListenerConnected()
+		logNotificationLine(this, '通知监听已连接')
+	}
+
+	override onNotificationPosted(sbn: StatusBarNotification): void {
+		try {
+			const pkg = sbn.getPackageName()
+			const notification = sbn.getNotification()
+			const extras = notification.extras
+			let title = ''
+			let text = ''
+			const rawTitle = extras.getCharSequence(Notification.EXTRA_TITLE)
+			if (rawTitle != null) title = rawTitle.toString()
+			const rawText = extras.getCharSequence(Notification.EXTRA_TEXT)
+			if (rawText != null) text = rawText.toString()
+			let line = pkg
+			if (title.length > 0) line = line + ' · ' + title
+			if (text.length > 0) line = line + ' · ' + text
+			logNotificationLine(this, line)
+		} catch (error) {
+			console.log('VibeGo notification listener failed', error)
+			logNotificationLine(this, '通知解析失败')
+		}
+	}
+
+	override onNotificationRemoved(sbn: StatusBarNotification): void {
+		try {
+			logNotificationLine(this, '通知已移除 · ' + sbn.getPackageName())
+		} catch (error) {
+			console.log('VibeGo notification removed failed', error)
+		}
+	}
+}
+
+export const requestProjectionConsent: RequestProjectionConsent = function (done) {
+	const activity = UTSAndroid.getUniActivity()
+	const context = appContext()
+	if (activity == null || context == null) {
+		done({ ok: false, message: 'Activity 不可用', status: emptyProjectionStatus() })
+		return
+	}
+	if (pendingProjectionConsentDone != null) {
+		done(projectionActionResult(context, false, '屏幕采集授权仍在进行中'))
+		return
+	}
+	releaseProjectionResources(context, true, '正在重新请求识屏授权', '')
+	ensureProjectionActivityCallback()
+	setProjectionState(context, true, false, false, '已打开系统屏幕采集授权弹窗', '')
+	const intent = serviceIntent(context, ACTION_PREPARE_PROJECTION_SESSION)
+	if (!startProbeService(context, intent)) {
+		setProjectionState(context, false, false, false, '前台服务启动失败，请使用自定义基座后再测', '前台服务启动失败')
+		done(projectionActionResult(context, false, '前台服务启动失败，请使用自定义基座后再测'))
+		return
+	}
+	pendingProjectionConsentDone = done
+	try {
+		activity.startActivityForResult(projectionConsentIntent(activity), PROJECTION_REQUEST_CODE)
+	} catch (error) {
+		console.log('VibeGo request projection consent failed', error)
+		pendingProjectionConsentDone = null
+		releaseProjectionResources(context, true, '屏幕采集授权入口打开失败', '屏幕采集授权入口打开失败')
+		done(projectionActionResult(context, false, '屏幕采集授权入口打开失败'))
+	}
+}
+
+export const getProjectionStatus: GetProjectionStatus = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done(emptyProjectionStatus())
+		return
+	}
+	done(buildProjectionStatus(context))
+}
+
+export const captureProjectionFrame: CaptureProjectionFrame = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({
+			ok: false,
+			path: '',
+			width: 0,
+			height: 0,
+			timestamp: '',
+			error: 'Context 不可用',
+			status: emptyProjectionStatus(),
+		})
+		return
+	}
+	done(captureProjectionBitmap(context))
+}
+
+export const stopProjectionSession: StopProjectionSession = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyProjectionStatus() })
+		return
+	}
+	releaseProjectionResources(context, true, '识屏会话已结束', '')
+	done(projectionActionResult(context, true, '识屏会话已结束'))
+}
+
+export const requestProbePermissions: RequestProbePermissions = function (done) {
+	const activity = UTSAndroid.getUniActivity()
+	const context = appContext()
+	if (activity == null || context == null) {
+		done({
+			ok: false,
+			message: 'Activity 不可用',
+			status: emptyStatus(),
+		})
+		return
+	}
+
+	if (Build.VERSION.SDK_INT >= 33 && context.getApplicationInfo().targetSdkVersion >= 33 && !notificationGranted(context)) {
+		const permissions = ['android.permission.POST_NOTIFICATIONS']
+		UTSAndroid.requestSystemPermission(activity, permissions, function (_allRight: boolean, _grantedList: string[]) {
+			logLine(context, '通知权限请求完成')
+			done(actionResult(context, true, '通知权限请求完成'))
+		}, function (_doNotAskAgain: boolean, _grantedList: string[]) {
+			logLine(context, '通知权限未完全授权')
+			done(actionResult(context, false, '通知权限未完全授权'))
+		})
+		return
+	}
+
+	logLine(context, '当前无需运行时权限申请')
+	done(actionResult(context, true, '当前无需运行时权限申请'))
+}
+
+export const openExactAlarmSettings: OpenExactAlarmSettings = function () {
+	const context = appContext()
+	if (context == null) return
+	try {
+		const intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+		intent.setData(Uri.parse('package:' + context.getPackageName()))
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		context.startActivity(intent)
+	} catch (error) {
+		console.log('VibeGo exact alarm settings failed', error)
+		const intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+		intent.setData(Uri.parse('package:' + context.getPackageName()))
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		context.startActivity(intent)
+	}
+}
+
+export const startHeartbeat: StartHeartbeat = function (intervalSec: Int, serverUrl: string, done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	if (!notificationGranted(context)) {
+		done(actionResult(context, false, '请先授权通知权限，否则前台服务通知可能无法显示'))
+		return
+	}
+	const safeInterval: Int = intervalSec < 3 ? 3 : intervalSec
+	const intent = serviceIntent(context, ACTION_START_HEARTBEAT)
+	intent.putExtra(EXTRA_INTERVAL_SEC, safeInterval)
+	intent.putExtra(EXTRA_SERVER_URL, serverUrl)
+	if (!startProbeService(context, intent)) {
+		done(actionResult(context, false, '前台服务启动失败，请使用自定义基座后再测'))
+		return
+	}
+	logLine(context, '已请求启动前台心跳服务')
+	done(actionResult(context, true, '已请求启动前台心跳服务'))
+}
+
+export const stopHeartbeat: StopHeartbeat = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	const intent = serviceIntent(context, ACTION_STOP_HEARTBEAT)
+	if (!startProbeService(context, intent)) {
+		done(actionResult(context, false, '前台服务启动失败，请使用自定义基座后再测'))
+		return
+	}
+	done(actionResult(context, true, '已请求停止前台心跳服务'))
+}
+
+export const scheduleAlarm: ScheduleAlarm = function (delaySec: Int, done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	const canUseExactAlarm = exactAlarmGranted(context)
+	const safeDelay: Int = delaySec < 5 ? 5 : delaySec
+	const delayedIntent = serviceIntent(context, ACTION_START_DELAYED_ALARM)
+	delayedIntent.putExtra(EXTRA_DELAY_SEC, safeDelay)
+	if (!startProbeService(context, delayedIntent)) {
+		done(actionResult(context, false, '前台服务启动失败，请使用自定义基座后再测'))
+		return
+	}
+	if (canUseExactAlarm) {
+		const alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+		const triggerAt: Long = System.currentTimeMillis() + (safeDelay * 1000).toLong()
+		const pi = alarmPendingIntent(context)
+		alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+		logLine(context, '已设置双通道闹钟：前台服务倒计时 + AlarmManager，' + safeDelay.toString() + ' 秒后播放')
+	} else {
+		logLine(context, '精确闹钟权限不可用，仅启动前台服务倒计时通道')
+	}
+	done(actionResult(context, true, '已启动前台服务倒计时，并设置 AlarmManager 对照。现在锁屏等待响铃'))
+}
+
+export const cancelAlarm: CancelAlarm = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	const alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+	alarm.cancel(alarmPendingIntent(context))
+	const intent = serviceIntent(context, ACTION_CANCEL_DELAYED_ALARM)
+	startProbeService(context, intent)
+	logLine(context, '已取消测试闹钟')
+	done(actionResult(context, true, '已取消测试闹钟'))
+}
+
+export const stopPlayback: StopPlayback = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	const intent = serviceIntent(context, ACTION_STOP_PLAYBACK)
+	if (!startProbeService(context, intent)) {
+		done(actionResult(context, false, '前台服务启动失败，请使用自定义基座后再测'))
+		return
+	}
+	done(actionResult(context, true, '已请求停止播放'))
+}
+
+export const showLocalNotification: ShowLocalNotification = function (title: string, text: string, done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	if (!notificationGranted(context)) {
+		done(actionResult(context, false, '请先授权通知权限'))
+		return
+	}
+	const safeTitle = title.length > 0 ? title : 'VibeGo'
+	const safeText = text.length > 0 ? text : '你有一条新的本地消息'
+	showLocalNotificationNow(context, safeTitle, safeText)
+	done(actionResult(context, true, '本地通知已发送'))
+}
+
+export const scheduleLocalNotification: ScheduleLocalNotification = function (delaySec: Int, title: string, text: string, done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	if (!notificationGranted(context)) {
+		done(actionResult(context, false, '请先授权通知权限'))
+		return
+	}
+	const safeDelay: Int = delaySec < 3 ? 3 : delaySec
+	const safeTitle = title.length > 0 ? title : 'VibeGo'
+	const safeText = text.length > 0 ? text : '你有一条新的本地消息'
+	const triggerAt: Long = System.currentTimeMillis() + (safeDelay * 1000).toLong()
+	const alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+	const pi = localNotificationAlarmPendingIntent(context, safeTitle, safeText)
+	if (Build.VERSION.SDK_INT >= 31 && exactAlarmGranted(context)) {
+		alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+	} else if (Build.VERSION.SDK_INT >= 23) {
+		alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+	} else {
+		alarm.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+	}
+	logLine(context, '已设置本地通知: ' + safeDelay.toString() + ' 秒后触发')
+	done(actionResult(context, true, '本地通知已加入定时队列'))
+}
+
+export const cancelLocalNotification: CancelLocalNotification = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, message: 'Context 不可用', status: emptyStatus() })
+		return
+	}
+	cancelLocalNotificationNow(context)
+	done(actionResult(context, true, '已取消本地通知'))
+}
+
+export const getProbeStatus: GetProbeStatus = function (done) {
+	const context = appContext()
+	if (context == null) {
+		done(emptyStatus())
+		return
+	}
+	done(buildStatus(context))
+}

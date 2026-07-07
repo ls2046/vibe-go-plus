@@ -1,0 +1,51 @@
+<template>
+	<image class="live-process-spinner" :style="spinnerStyle()" src="/static/icons/loading-ring.svg" mode="aspectFit"></image>
+</template>
+
+<script lang="uts">
+export default {
+	props: {
+		size: { type: Number, default: 22 },
+		opacity: { type: Number, default: 0.78 },
+	},
+	data() {
+		return {
+			angle: 0,
+			timer: 0,
+			startedAt: 0,
+		}
+	},
+	mounted() {
+		this.start()
+	},
+	unmounted() {
+		this.stop()
+	},
+	methods: {
+		start() {
+			if (this.timer != 0) return
+			this.startedAt = Date.now()
+			this.timer = setInterval(() => {
+				const elapsed = Date.now() - this.startedAt
+				this.angle = (elapsed % 760) * 360 / 760
+			}, 16)
+		},
+		stop() {
+			if (this.timer != 0) {
+				clearInterval(this.timer)
+				this.timer = 0
+			}
+			this.angle = 0
+		},
+		spinnerStyle(): string {
+			return 'width:' + this.size.toString() + 'px;height:' + this.size.toString() + 'px;opacity:' + this.opacity.toString() + ';transform:rotate(' + this.angle.toString() + 'deg);'
+		},
+	},
+}
+</script>
+
+<style>
+.live-process-spinner {
+	transform-origin: center;
+}
+</style>

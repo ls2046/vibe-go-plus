@@ -1,0 +1,84 @@
+import Bitmap from 'android.graphics.Bitmap'
+import BitmapFactory from 'android.graphics.BitmapFactory'
+import BitmapDrawable from 'android.graphics.drawable.BitmapDrawable'
+import Color from 'android.graphics.Color'
+import ViewGroup from 'android.view.ViewGroup'
+import ImageView from 'android.widget.ImageView'
+
+export class NativeShotImage {
+	private $element: UniNativeViewElement
+	private imageView: ImageView | null = null
+	private drawable: BitmapDrawable | null = null
+	private bitmap: Bitmap | null = null
+
+	constructor(element: UniNativeViewElement) {
+		this.$element = element
+		this.bindView()
+	}
+
+	private bindView() {
+		const activity = this.$element.getAndroidActivity()
+		if (activity == null) return
+		const view = new ImageView(activity)
+		view.setBackgroundColor(Color.TRANSPARENT)
+		view.setScaleType(ImageView.ScaleType.FIT_XY)
+		view.setAdjustViewBounds(false)
+		view.setCropToPadding(false)
+		view.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		this.imageView = view
+		this.$element.bindAndroidView(view)
+	}
+
+	setSource(path: string) {
+		if (this.imageView == null) return
+		if (path.length == 0) {
+			this.clear()
+			return
+		}
+		try {
+			const nextBitmap = BitmapFactory.decodeFile(path)
+			if (nextBitmap == null) {
+				this.clear()
+				return
+			}
+			nextBitmap.setDensity(Bitmap.DENSITY_NONE)
+			const resources = this.$element.getAndroidActivity()?.getResources()
+			if (resources == null) {
+				nextBitmap.recycle()
+				this.clear()
+				return
+			}
+			const nextDrawable = new BitmapDrawable(resources, nextBitmap)
+			nextDrawable.setAntiAlias(true)
+			nextDrawable.setFilterBitmap(true)
+			nextDrawable.setDither(true)
+
+			this.imageView?.setImageDrawable(nextDrawable)
+			this.releaseBitmap()
+			this.bitmap = nextBitmap
+			this.drawable = nextDrawable
+		} catch (error) {
+			console.log('NativeShotImage setSource failed', error)
+			this.clear()
+		}
+	}
+
+	private releaseBitmap() {
+		const oldBitmap = this.bitmap
+		this.drawable = null
+		this.bitmap = null
+		if (oldBitmap != null && !oldBitmap.isRecycled()) {
+			oldBitmap.recycle()
+		}
+	}
+
+	clear() {
+		this.imageView?.setImageDrawable(null)
+		this.releaseBitmap()
+	}
+
+	destroy() {
+		this.clear()
+		this.imageView = null
+	}
+}

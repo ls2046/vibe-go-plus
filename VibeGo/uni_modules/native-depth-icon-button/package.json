@@ -1,0 +1,36 @@
+{
+	"id": "native-depth-icon-button",
+	"displayName": "Native Depth Icon Button",
+	"version": "0.0.1",
+	"description": "Android native drawn depth button shell for icon buttons.",
+	"keywords": [
+		"android",
+		"button",
+		"canvas"
+	],
+	"uni_modules": {
+		"dependencies": [],
+		"encrypt": [],
+		"platforms": {
+			"cloud": {
+				"tcb": "n",
+				"aliyun": "n"
+			},
+			"client": {
+				"Vue": {
+					"vue2": "n",
+					"vue3": "y"
+				},
+				"App": {
+					"app-android": "y",
+					"app-ios": "y"
+				},
+				"H5-mobile": {
+					"Safari": "n",
+					"Android Browser": "n"
+				},
+				"mp-weixin": "n"
+			}
+		}
+	}
+}

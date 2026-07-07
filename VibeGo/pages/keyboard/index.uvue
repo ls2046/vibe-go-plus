@@ -1,0 +1,412 @@
+<template>
+	<view class="app-page" :style="pageStyle()">
+		<view class="topbar">
+			<view class="back-btn" hover-class="back-btn-pressed" hover-stay-time="120" @click="goBack">
+				<text class="back-btn-text">‹</text>
+			</view>
+			<view class="topbar-info">
+				<text class="topbar-title">键盘设置</text>
+				<text class="topbar-subtitle">{{ statusText }}</text>
+			</view>
+			<view class="status-pill" :class="learningAction.length > 0 ? 'active' : 'idle'">
+				<text class="status-pill-text">{{ learningAction.length > 0 ? '学习中' : '就绪' }}</text>
+			</view>
+		</view>
+
+		<scroll-view class="content" :style="contentStyle()" scroll-y="true">
+			<view class="panel">
+				<view class="panel-header">
+					<text class="panel-title">连接设备</text>
+					<text class="panel-meta">{{ devices.length.toString() }} keyboard input devices</text>
+				</view>
+				<text class="value-text">{{ bluetoothText }}</text>
+				<view v-if="devices.length == 0" class="empty">
+					<text class="empty-text">还没有发现键盘输入设备。先在 Android 系统蓝牙里配对 AhaKey，然后回到这里按一下键。</text>
+				</view>
+				<view v-for="(device, index) in devices" :key="device.id" class="device-row">
+					<view class="row-main">
+						<text class="row-title">{{ device.name }}</text>
+						<text class="row-meta">id={{ device.id.toString() }} · external={{ device.external ? 'yes' : 'no' }} · type={{ device.keyboardType.toString() }}</text>
+					</view>
+				</view>
+				<view class="button-row">
+					<button class="button accent" type="default" @click="refreshAll">刷新</button>
+					<button class="button" type="default" @click="openBluetooth">蓝牙设置</button>
+					<button class="button" type="default" @click="requestBluetooth">申请权限</button>
+				</view>
+			</view>
+
+			<view class="panel">
+				<view class="panel-header">
+					<text class="panel-title">最近按键</text>
+					<text class="panel-meta">用于确认 Android 实际 keyCode</text>
+				</view>
+				<view v-if="lastEvent == null" class="empty">
+					<text class="empty-text">在 VibeGo 前台按一下实体键，这里会显示最近一次按键。</text>
+				</view>
+				<view v-else class="key-event">
+					<text class="row-title">{{ lastEventText() }}</text>
+					<text class="row-meta">{{ lastEventDeviceText() }}</text>
+				</view>
+			</view>
+
+			<view class="panel">
+				<view class="panel-header">
+					<text class="panel-title">按钮映射</text>
+					<text class="panel-meta">只保存在 VibeGo，不写入键盘固件</text>
+				</view>
+				<view v-for="(action, index) in actions" :key="action.id" class="mapping-row">
+					<view class="row-main">
+						<text class="row-title">{{ action.label }}</text>
+						<text class="row-meta">{{ mappingSummary(action.id) }}</text>
+					</view>
+					<button class="small-button accent" type="default" @click="learnAction(action.id, action.label)">{{ learningAction == action.id ? '按键中' : '学习' }}</button>
+					<button class="small-button" type="default" @click="clearAction(action.id)">清除</button>
+				</view>
+				<view v-if="learningAction.length > 0" class="learning-box">
+					<text class="learning-title">请按下要绑定到「{{ learningLabel }}」的实体键</text>
+					<text class="learning-desc">按键会被 VibeGo 消费一次，不会触发录音或发送。</text>
+					<button class="button" type="default" @click="cancelLearning">取消学习</button>
+				</view>
+				<view class="button-row">
+					<button class="button danger" type="default" @click="clearAllMappings">清空全部映射</button>
+				</view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+import { getBluetoothCapability, requestBluetoothCapability, type BluetoothCapability } from '../../common/android-bluetooth.uts'
+import { installGlobalVoiceLongPress } from '../../common/android-global-voice.uts'
+import { openBluetoothSettings } from '../../common/android-open.uts'
+import {
+	cancelKeyboardLearning,
+	clearKeyboardMappings,
+	getKeyboardLearningAction,
+	getKeyboardLearningLabel,
+	getKeyboardMappings,
+	getLastKeyboardEvent,
+	keyboardActionLabel,
+	listKeyboardDevices,
+	removeKeyboardMapping,
+	startKeyboardLearning,
+	type KeyboardDeviceInfo,
+	type KeyboardKeyEventInfo,
+	type KeyboardMapping,
+} from '../../common/android-keyboard.uts'
+
+type KeyboardActionOption = {
+	id: string
+	label: string
+}
+
+export default {
+	data() {
+		return {
+			statusText: '配对后按键即可学习映射',
+			bluetoothText: '蓝牙状态未检测',
+			devices: new Array<KeyboardDeviceInfo>(),
+			mappings: new Array<KeyboardMapping>(),
+			lastEvent: null as KeyboardKeyEventInfo | null,
+			learningAction: '',
+			learningLabel: '',
+			windowHeight: 812,
+			safeBottom: 0,
+			actions: [
+				{ id: 'global-record', label: '全局录音' },
+				{ id: 'send', label: '主发送按钮' },
+				{ id: 'noop', label: '清空输入框' },
+				{ id: 'delete', label: '删除' },
+			] as Array<KeyboardActionOption>,
+		}
+	},
+	onLoad() {
+		installGlobalVoiceLongPress()
+		this.refreshLayout()
+		this.refreshAll()
+		uni.$on('vibego-keyboard-event', this.onKeyboardEvent)
+		uni.$on('vibego-keyboard-mapping-changed', this.onMappingsChanged)
+		uni.$on('vibego-keyboard-learning', this.onLearningChanged)
+	},
+	onShow() {
+		installGlobalVoiceLongPress()
+		setTimeout(() => {
+			installGlobalVoiceLongPress()
+		}, 120)
+		this.refreshLayout()
+		this.refreshAll()
+	},
+	onResize(_options: OnResizeOptions) {
+		this.refreshLayout()
+	},
+	onUnload() {
+		uni.$off('vibego-keyboard-event', this.onKeyboardEvent)
+		uni.$off('vibego-keyboard-mapping-changed', this.onMappingsChanged)
+		uni.$off('vibego-keyboard-learning', this.onLearningChanged)
+	},
+	methods: {
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.windowHeight = info.windowHeight
+				this.safeBottom = info.safeAreaInsets.bottom > info.windowBottom ? info.safeAreaInsets.bottom : info.windowBottom
+			} catch (_) {}
+		},
+		pageStyle(): string {
+			return 'height:' + this.windowHeight.toString() + 'px;padding-bottom:' + this.safeBottom.toString() + 'px;'
+		},
+		contentStyle(): string {
+			const height = this.windowHeight - 86 - this.safeBottom
+			return 'height:' + (height > 260 ? height : 260).toString() + 'px;'
+		},
+		refreshAll() {
+			this.devices = listKeyboardDevices()
+			this.mappings = getKeyboardMappings()
+			this.lastEvent = getLastKeyboardEvent()
+			this.learningAction = getKeyboardLearningAction()
+			this.learningLabel = getKeyboardLearningLabel()
+			getBluetoothCapability((result: BluetoothCapability) => {
+				this.bluetoothText = result.message
+			})
+		},
+		requestBluetooth() {
+			requestBluetoothCapability((result: BluetoothCapability) => {
+				this.bluetoothText = result.message
+				this.refreshAll()
+			})
+		},
+		openBluetooth() {
+			if (!openBluetoothSettings()) this.statusText = '打开蓝牙设置失败'
+		},
+		goBack() {
+			uni.navigateBack()
+		},
+		onKeyboardEvent(event: KeyboardKeyEventInfo) {
+			this.lastEvent = event
+			this.devices = listKeyboardDevices()
+			this.statusText = '收到按键：' + event.keyName
+		},
+		onMappingsChanged(mappings: Array<KeyboardMapping>) {
+			this.mappings = mappings
+			this.statusText = '映射已更新'
+		},
+		onLearningChanged(action: string) {
+			this.learningAction = action
+			this.learningLabel = keyboardActionLabel(action)
+			if (action.length > 0) this.statusText = '正在学习：' + this.learningLabel
+			else this.statusText = '配对后按键即可学习映射'
+		},
+		learnAction(action: string, label: string) {
+			this.learningAction = action
+			this.learningLabel = label
+			startKeyboardLearning(action, label)
+			installGlobalVoiceLongPress()
+			setTimeout(() => {
+				installGlobalVoiceLongPress()
+			}, 120)
+			this.statusText = '请按下要绑定到「' + label + '」的实体键'
+		},
+		cancelLearning() {
+			cancelKeyboardLearning()
+		},
+		clearAction(action: string) {
+			removeKeyboardMapping(action)
+			this.mappings = getKeyboardMappings()
+		},
+		clearAllMappings() {
+			clearKeyboardMappings()
+			this.mappings = new Array<KeyboardMapping>()
+		},
+		mappingForAction(action: string): KeyboardMapping | null {
+			for (let index: Int = 0; index < this.mappings.length; index++) {
+				if (this.mappings[index].action == action) return this.mappings[index]
+			}
+			return null
+		},
+		mappingSummary(action: string): string {
+			const mapping = this.mappingForAction(action)
+			if (mapping == null) return '未绑定，点击学习后按实体键'
+			return mapping.keyName + ' · keyCode=' + mapping.keyCode.toString() + ' · scanCode=' + mapping.scanCode.toString() + ' · ' + mapping.deviceName
+		},
+		lastEventText(): string {
+			if (this.lastEvent == null) return ''
+			return this.lastEvent.keyName + ' · keyCode=' + this.lastEvent.keyCode.toString() + ' · scanCode=' + this.lastEvent.scanCode.toString() + ' · ' + this.lastEvent.action
+		},
+		lastEventDeviceText(): string {
+			if (this.lastEvent == null) return ''
+			return this.lastEvent.deviceName + ' · deviceId=' + this.lastEvent.deviceId.toString() + ' · repeat=' + this.lastEvent.repeatCount.toString()
+		},
+	},
+}
+</script>
+
+<style>
+.app-page {
+	background-color: #f4f6fa;
+}
+
+.topbar {
+	height: 78px;
+	padding: 14px 18px 10px 18px;
+	flex-direction: row;
+	align-items: center;
+	background-color: #ffffff;
+	border-bottom-width: 1px;
+	border-bottom-color: #e5e9f0;
+	border-bottom-style: solid;
+}
+
+.back-btn {
+	width: 44px;
+	height: 44px;
+	border-radius: 22px;
+	align-items: center;
+	justify-content: center;
+	background-color: #eef2f7;
+}
+
+.back-btn-pressed {
+	opacity: 0.78;
+	transform: scale(0.96);
+}
+
+.back-btn-text {
+	font-size: 34px;
+	color: #222b3a;
+}
+
+.topbar-info {
+	flex: 1;
+	margin-left: 12px;
+}
+
+.topbar-title {
+	font-size: 21px;
+	font-weight: 700;
+	color: #1f2630;
+}
+
+.topbar-subtitle {
+	margin-top: 4px;
+	font-size: 12px;
+	color: #6f7885;
+}
+
+.status-pill {
+	padding: 7px 12px;
+	border-radius: 18px;
+	background-color: #eef2f7;
+}
+
+.status-pill.active {
+	background-color: #fff0d8;
+}
+
+.status-pill-text {
+	font-size: 12px;
+	color: #2c3440;
+}
+
+.content {
+	padding: 14px;
+}
+
+.panel {
+	margin-bottom: 14px;
+	padding: 14px;
+	border-radius: 8px;
+	background-color: #ffffff;
+	border-width: 1px;
+	border-color: #e3e8ef;
+	border-style: solid;
+}
+
+.panel-header {
+	margin-bottom: 12px;
+}
+
+.panel-title {
+	font-size: 17px;
+	font-weight: 700;
+	color: #202833;
+}
+
+.panel-meta,
+.row-meta,
+.empty-text,
+.value-text,
+.learning-desc {
+	margin-top: 5px;
+	font-size: 12px;
+	color: #768190;
+}
+
+.device-row,
+.mapping-row,
+.key-event,
+.empty,
+.learning-box {
+	padding: 12px;
+	margin-bottom: 10px;
+	border-radius: 8px;
+	background-color: #f7f9fc;
+	border-width: 1px;
+	border-color: #e8edf4;
+	border-style: solid;
+}
+
+.mapping-row,
+.device-row {
+	flex-direction: row;
+	align-items: center;
+}
+
+.row-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.row-title,
+.learning-title {
+	font-size: 15px;
+	font-weight: 700;
+	color: #202833;
+}
+
+.button-row {
+	margin-top: 8px;
+	flex-direction: row;
+	flex-wrap: wrap;
+}
+
+.button,
+.small-button {
+	margin-right: 8px;
+	margin-bottom: 8px;
+	border-radius: 8px;
+	background-color: #eef2f7;
+	color: #202833;
+}
+
+.button {
+	height: 38px;
+	font-size: 13px;
+}
+
+.small-button {
+	height: 34px;
+	min-width: 64px;
+	font-size: 12px;
+}
+
+.accent {
+	background-color: #1677ff;
+	color: #ffffff;
+}
+
+.danger {
+	background-color: #fff0f0;
+	color: #bb2d2d;
+}
+</style>

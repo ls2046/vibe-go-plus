@@ -1,0 +1,66 @@
+<template>
+	<native-view class="native-shot-image" :style="nativeStyle" @init="onviewinit"></native-view>
+</template>
+
+<script lang="uts">
+import { NativeShotImage } from '@/uni_modules/native-shot-image'
+
+export default {
+	props: {
+		'src': {
+			type: String,
+			default: '',
+		},
+		'shotWidth': {
+			type: Number,
+			default: 0,
+		},
+		'shotHeight': {
+			type: Number,
+			default: 0,
+		},
+	},
+	data() {
+		return {
+			nativeImage: null as NativeShotImage | null,
+			currentSrc: '',
+		}
+	},
+	computed: {
+		nativeStyle(): string {
+			const width = this.shotWidth
+			const height = this.shotHeight
+			if (width > 0 && height > 0) {
+				return 'width:' + width.toString() + 'px;height:' + height.toString() + 'px;'
+			}
+			return 'width:100%;height:100%;'
+		},
+	},
+	watch: {
+		'src': {
+			handler(newValue: string, _oldValue: string) {
+				this.currentSrc = newValue
+				this.nativeImage?.setSource(newValue)
+			},
+			immediate: true,
+		},
+	},
+	methods: {
+		onviewinit(e: UniNativeViewInitEvent) {
+			this.nativeImage = new NativeShotImage(e.detail.element)
+			this.nativeImage?.setSource(this.currentSrc)
+		},
+	},
+	unmounted() {
+		this.nativeImage?.destroy()
+		this.nativeImage = null
+	},
+}
+</script>
+
+<style>
+	.native-shot-image {
+		width: 100%;
+		height: 100%;
+	}
+</style>

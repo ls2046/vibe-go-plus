@@ -1,0 +1,460 @@
+<template>
+	<view class="chat-card-frame" :class="threadSwitchMotionActive ? 'chat-card-frame-thread-motion' : ''" :style="chatShellStyle">
+		<view class="chat-shell">
+			<view class="floating-title" :class="showCompactMenuButton ? 'floating-title-compact' : ''" :style="titleBarStyle">
+				<view v-if="showCompactMenuButton" class="icon-button compact-menu-button" hover-class="icon-button-pressed" hover-stay-time="120" @click="$emit('openCompactDrawer')">
+					<image class="icon" :src="panelIconSrc()" mode="aspectFit"></image>
+				</view>
+				<text class="main-title">{{ displayTitle }}</text>
+				<view class="top-spacer"></view>
+				<view v-if="voiceFirstComposer" class="perception-switch" :class="perceptionSwitchClass()" @click="$emit('togglePerception')">
+					<text class="perception-switch-text" :class="perceptionEnabled ? 'perception-switch-text-active' : ''">感知</text>
+					<view class="perception-switch-track" :class="perceptionEnabled ? 'perception-switch-track-active' : ''">
+						<view class="perception-switch-thumb" :class="perceptionEnabled ? 'perception-switch-thumb-active' : ''"></view>
+					</view>
+				</view>
+			</view>
+			<view class="chat-body" :style="chatBodyStyle">
+					<view v-if="threadLoading" class="thread-loading">
+						<view class="thread-loading-spinner-host">
+							<live-process-spinner :size="14" :opacity="0.86"></live-process-spinner>
+						</view>
+						<text class="thread-loading-text">正在加载会话</text>
+					</view>
+					<scroll-view class="chat-scroll chat-scroll-main" :style="chatScrollStyle" scroll-y="true" :scroll-top="chatScrollTop" :scroll-into-view="chatScrollIntoView">
+						<view class="chat-scroll-content" :style="chatScrollContentStyle">
+							<view v-if="hasEarlierMessages" class="load-earlier-row" @click="$emit('loadEarlierMessages')">
+								<text class="load-earlier-text">加载更早消息</text>
+							</view>
+								<view v-for="message in localMessageViews" :id="messageDomId(message)" :key="message.id" class="message-row" :class="messageRowClass(message)">
+								<view v-if="message.role == 'user'" class="message-user-bubble" :style="userMessageStyle">
+									<text class="message-user-text" :selectable="true">{{ message.text }}</text>
+								</view>
+								<view v-else class="message-assistant-body">
+									<view v-for="(block, blockIndex) in message.blocks" :key="message.id + '-block-' + blockIndex.toString()" :class="messageBlockClass(block.kind)">
+										<view v-if="block.kind == 'code'" class="message-code-head">
+										<text class="message-code-label">代码</text>
+										<view class="message-code-spacer"></view>
+										<view class="message-code-copy-icon" @click="$emit('copyText', block.rawText)">
+											<image class="message-copy-icon" src="/static/icons/copy.svg" mode="aspectFit"></image>
+										</view>
+									</view>
+									<text v-if="block.kind == 'list'" class="message-list-bullet" :selectable="true">•</text>
+									<view v-if="block.kind == 'image'" class="message-image-wrap">
+										<image class="message-inline-image" :style="messageImageStyle" :src="block.rawText" mode="aspectFit" @click="$emit('textSegmentClick', imageBlockSegment(block))"></image>
+										<text v-if="block.text.length > 0" class="message-image-caption" :selectable="true">{{ block.text }}</text>
+									</view>
+									<view v-else-if="block.kind == 'table'" class="message-table">
+										<view v-for="(row, rowIndex) in tableRows(block.rawText)" :key="message.id + '-block-' + blockIndex.toString() + '-table-row-' + rowIndex.toString()" :class="messageTableRowClass(rowIndex)">
+											<view v-for="(cell, cellIndex) in row" :key="message.id + '-block-' + blockIndex.toString() + '-table-cell-' + rowIndex.toString() + '-' + cellIndex.toString()" :class="messageTableCellClass(rowIndex, cellIndex)">
+												<text v-for="(seg, tableSegIndex) in tableCellSegments(cell)" :key="message.id + '-block-' + blockIndex.toString() + '-table-seg-' + rowIndex.toString() + '-' + cellIndex.toString() + '-' + tableSegIndex.toString()" :class="seg.kind == 'url' ? 'message-table-link' : messageTableTextClass(rowIndex)" :selectable="true" @click="$emit('textSegmentClick', seg)">{{ seg.text }}</text>
+											</view>
+										</view>
+									</view>
+									<view v-else-if="block.kind != 'hr'" class="message-text-wrap">
+										<text v-for="(seg, segIndex) in block.segments" :key="message.id + '-block-' + blockIndex.toString() + '-seg-' + segIndex.toString()" :class="seg.kind == 'url' ? 'message-url' : messageBlockTextClass(block.kind)" :selectable="true" @click="$emit('textSegmentClick', seg)">{{ seg.text }}</text>
+									</view>
+									<view v-else class="message-hr"></view>
+								</view>
+							</view>
+							<view class="message-footer">
+								<view class="message-footer-info">
+									<text class="message-label" :selectable="true">{{ messageLabel(message) }}</text>
+									<text v-if="formatMessageTime(message.timestamp).length > 0" class="message-time" :selectable="true">{{ formatMessageTime(message.timestamp) }}</text>
+									</view>
+									<view class="message-copy-action" @click="$emit('copyMessage', message)">
+										<image class="message-copy-icon" src="/static/icons/copy.svg" mode="aspectFit"></image>
+									</view>
+								</view>
+							</view>
+							<view v-if="showLiveProcessCard()" class="live-process-card" :class="liveProcessCardClass()">
+								<view class="live-process-head">
+									<view class="live-process-title-wrap">
+										<view class="live-process-dot" :class="liveProcessHasError() ? 'live-process-dot-error' : ''"></view>
+										<text class="live-process-title">{{ liveProcessTitle() }}</text>
+									</view>
+									<view v-if="codexRunning && !liveProcessHasError()" class="live-process-loading">
+										<live-process-spinner :size="22" :opacity="0.78"></live-process-spinner>
+									</view>
+								</view>
+								<view v-if="liveStatusText.length > 0" class="live-process-status-row">
+									<text class="live-process-status-text">{{ liveStatusText }}</text>
+								</view>
+								<view v-for="event in liveProcessEvents()" :key="event.id" class="live-process-row" :class="liveProcessRowClass(event)">
+									<text class="live-process-text">{{ processEventLine(event) }}</text>
+								</view>
+							</view>
+							<view id="chat-bottom-anchor" class="chat-bottom-anchor"></view>
+						</view>
+					</scroll-view>
+
+				<view class="composer" :class="voiceFirstComposer ? 'composer-voice-first' : ''" :style="composerStyle">
+					<view v-if="voiceFirstComposer" class="voice-first-composer-row">
+						<view class="voice-first-leading-icon">
+							<image class="voice-first-mic-icon" src="/static/icons/mic-purple.svg" mode="aspectFit"></image>
+						</view>
+						<view class="voice-first-input-wrap">
+							<view v-if="hasComposerAttachment" class="voice-first-attachments">
+								<view v-for="(_, attachmentIndex) in composerAttachments" :key="'voice-attachment-' + attachmentIndex.toString() + '-' + attachmentPathAt(attachmentIndex)" class="voice-first-attachment">
+									<image v-if="attachmentIsImageAt(attachmentIndex)" class="voice-first-attachment-image" :src="attachmentUrlAt(attachmentIndex)" mode="aspectFill"></image>
+									<view v-else class="voice-first-attachment-file">
+										<text class="voice-first-attachment-file-text">{{ attachmentShortLabelAt(attachmentIndex) }}</text>
+									</view>
+									<view class="voice-first-attachment-remove" @click="$emit('clearComposerAttachment', attachmentIndex)">
+										<text class="voice-first-attachment-remove-text">×</text>
+									</view>
+								</view>
+							</view>
+							<input class="voice-first-input" v-model="promptDraft" placeholder="长按语音或输入指令" />
+						</view>
+						<native-depth-icon-button class="voice-first-action-button" :icon="uploadIconSrc" variant="neutral" :size="48" :iconSize="21" @click="$emit('openUploadMenu')"></native-depth-icon-button>
+						<native-depth-icon-button class="voice-first-action-button voice-first-send-button" :class="sendPulseActive ? 'composer-send-pulse' : ''" :icon="sendIconSrc" :variant="canSendPrompt ? 'primary' : 'neutral'" :active="canSendPrompt" :disabled="!canSendPrompt" :size="48" :iconSize="21" @click="$emit('sendPrompt')"></native-depth-icon-button>
+					</view>
+					<view v-else class="composer-standard">
+						<view class="composer-content" :style="composerContentStyle">
+							<view v-if="hasComposerAttachment" class="composer-attachments">
+								<view v-for="(_, attachmentIndex) in composerAttachments" :key="'composer-attachment-' + attachmentIndex.toString() + '-' + attachmentPathAt(attachmentIndex)" class="composer-attachment">
+									<image v-if="attachmentIsImageAt(attachmentIndex)" class="composer-attachment-image" :src="attachmentUrlAt(attachmentIndex)" mode="aspectFill"></image>
+									<view v-else class="composer-attachment-file">
+										<text class="composer-attachment-file-text">{{ attachmentShortLabelAt(attachmentIndex) }}</text>
+									</view>
+									<view class="composer-attachment-remove" @click="$emit('clearComposerAttachment', attachmentIndex)">
+										<text class="composer-attachment-remove-text">×</text>
+									</view>
+								</view>
+							</view>
+							<textarea class="composer-input" :class="hasComposerAttachment ? 'composer-input-with-attachment' : ''" :style="composerInputStyle" v-model="promptDraft" placeholder="要求后续变更" />
+							<text v-if="voiceTarget == 'composer' && voicePreviewText.length > 0" class="composer-voice-preview">{{ voicePreviewText }}</text>
+						</view>
+						<view class="composer-bottom">
+							<native-depth-icon-button class="composer-depth-button" :icon="uploadIconSrc" variant="neutral" :size="52" :iconSize="22" @click="$emit('openUploadMenu')"></native-depth-icon-button>
+							<view class="composer-spacer"></view>
+							<native-depth-icon-button class="composer-depth-button composer-depth-button-mic" icon="/static/icons/mic-white.svg" variant="softPurple" :active="true" :size="52" :iconSize="25" @click="$emit('toggleComposerVoiceRecord')"></native-depth-icon-button>
+							<native-depth-icon-button class="composer-depth-button composer-depth-button-send" :class="sendPulseActive ? 'composer-send-pulse' : ''" :icon="sendIconSrc" :variant="canSendPrompt ? 'primary' : 'neutral'" :active="canSendPrompt" :disabled="!canSendPrompt" :size="52" :iconSize="22" @click="$emit('sendPrompt')"></native-depth-icon-button>
+						</view>
+					</view>
+				</view>
+			</view>
+			</view>
+		</view>
+</template>
+
+<script lang="uts">
+import { type ChatMessageView, type ChatTextBlock, type ChatTextSegment, type CodexProcessEvent, type ComposerAttachment } from '../modules/index-types.uts'
+import { formatMessageTime, messageBlockClass, messageBlockTextClass, messageLabel } from '../modules/message-view.uts'
+import LiveProcessSpinner from './LiveProcessSpinner.uvue'
+
+export default {
+	components: {
+		LiveProcessSpinner,
+	},
+	props: {
+		displayTitle: { type: String, default: '' },
+		threadLoading: { type: Boolean, default: false },
+		messageViews: {
+			type: Array,
+			default: (): Array<ChatMessageView> => new Array<ChatMessageView>(),
+		},
+		processEvents: {
+			type: Array,
+			default: (): Array<CodexProcessEvent> => new Array<CodexProcessEvent>(),
+		},
+		codexRunning: { type: Boolean, default: false },
+		liveStatusText: { type: String, default: '' },
+		hasEarlierMessages: { type: Boolean, default: false },
+		chatScrollTop: { type: Number, default: 0 },
+		chatScrollIntoView: { type: String, default: '' },
+		prompt: { type: String, default: '' },
+		voiceTarget: { type: String, default: '' },
+		voicePreviewText: { type: String, default: '' },
+		composerAttachments: {
+			type: Array,
+			default: (): Array<ComposerAttachment> => new Array<ComposerAttachment>(),
+		},
+		hasComposerAttachment: { type: Boolean, default: false },
+		composerMicActive: { type: Boolean, default: false },
+		canSendPrompt: { type: Boolean, default: false },
+		sendIconSrc: { type: String, default: '' },
+		uploadIconSrc: { type: String, default: '/static/icons/plus.svg' },
+		nightMode: { type: Boolean, default: false },
+		chatShellStyle: { type: String, default: '' },
+		titleBarStyle: { type: String, default: '' },
+		chatBodyStyle: { type: String, default: '' },
+		chatScrollStyle: { type: String, default: '' },
+		chatScrollContentStyle: { type: String, default: '' },
+		messageImageStyle: { type: String, default: '' },
+		composerStyle: { type: String, default: '' },
+		composerContentStyle: { type: String, default: '' },
+		composerInputStyle: { type: String, default: '' },
+		userMessageStyle: { type: String, default: '' },
+		showCompactMenuButton: { type: Boolean, default: false },
+		voiceFirstComposer: { type: Boolean, default: false },
+		recentMessageId: { type: String, default: '' },
+		sendPulseActive: { type: Boolean, default: false },
+		threadSwitchMotionActive: { type: Boolean, default: false },
+		perceptionEnabled: { type: Boolean, default: false },
+		perceptionBusy: { type: Boolean, default: false },
+	},
+	emits: ['toggleSettings', 'openCompactDrawer', 'loadEarlierMessages', 'copyText', 'textSegmentClick', 'copyMessage', 'clearComposerAttachment', 'promptInput', 'openUploadMenu', 'toggleComposerVoiceRecord', 'togglePerception', 'sendPrompt'],
+	data() {
+			return {
+				promptDraft: '',
+				localMessageViews: new Array<ChatMessageView>(),
+			}
+		},
+		watch: {
+			'messageViews': {
+			handler(newValue: Array<ChatMessageView>, _oldValue: Array<ChatMessageView>) {
+				this.localMessageViews = newValue
+			},
+			immediate: true,
+		},
+		'prompt': {
+			handler(newValue: string, _oldValue: string) {
+				if (this.promptDraft != newValue) this.promptDraft = newValue
+			},
+			immediate: true,
+		},
+		'promptDraft': {
+			handler(newValue: string, _oldValue: string) {
+				if (newValue != this.prompt) this.$emit('promptInput', newValue)
+			},
+		},
+	},
+		methods: {
+			messageLabel(message: ChatMessageView): string {
+			return messageLabel(message)
+		},
+		formatMessageTime(value: string): string {
+			return formatMessageTime(value)
+		},
+		messageBlockClass(kind: string): string {
+			return messageBlockClass(kind)
+		},
+		messageBlockTextClass(kind: string): string {
+			return messageBlockTextClass(kind)
+		},
+		imageBlockSegment(block: ChatTextBlock): ChatTextSegment {
+			return { kind: 'url', text: block.rawText, url: block.rawText }
+		},
+		attachmentAt(index: number): ComposerAttachment | null {
+			if (index < 0 || index >= this.composerAttachments.length) return null
+			return this.composerAttachments[index] as ComposerAttachment
+		},
+		attachmentPathAt(index: number): string {
+			const attachment = this.attachmentAt(index)
+			if (attachment == null) return ''
+			return attachment.path
+		},
+		attachmentUrlAt(index: number): string {
+			const attachment = this.attachmentAt(index)
+			if (attachment == null) return ''
+			return attachment.url
+		},
+		attachmentIsImageAt(index: number): boolean {
+			const attachment = this.attachmentAt(index)
+			if (attachment == null) return false
+			return this.attachmentIsImage(attachment)
+		},
+		attachmentShortLabelAt(index: number): string {
+			const attachment = this.attachmentAt(index)
+			if (attachment == null) return '文件'
+			return this.attachmentShortLabel(attachment)
+		},
+		attachmentIsImage(attachment: ComposerAttachment): boolean {
+			return attachment.url.length > 0 && attachment.mimeType.startsWith('image/')
+		},
+		attachmentShortLabel(attachment: ComposerAttachment): string {
+			if (attachment.mimeType.startsWith('image/')) return '图'
+			const name = attachment.name.length > 0 ? attachment.name : attachment.path
+			if (name.length <= 2) return '文件'
+			return name.substring(0, 2)
+		},
+		messageTableRowClass(index: number): string {
+			return index == 0 ? 'message-table-row message-table-head-row' : 'message-table-row'
+		},
+		messageTableCellClass(rowIndex: number, cellIndex: number): string {
+			const classes = new Array<string>()
+			classes.push('message-table-cell')
+			if (rowIndex == 0) classes.push('message-table-head-cell')
+			if (cellIndex == 0) classes.push('message-table-first-cell')
+			return classes.join(' ')
+		},
+		messageTableTextClass(rowIndex: number): string {
+			return rowIndex == 0 ? 'message-table-head-text' : 'message-table-text'
+		},
+		plainTableMarkdownText(text: string): string {
+			let value = text
+			value = value.split('**').join('')
+			value = value.split('__').join('')
+			value = value.split('~~').join('')
+			value = value.split('`').join('')
+			return value
+		},
+		isTableSeparatorLine(line: string): boolean {
+			const cells = this.splitTableRow(line)
+			if (cells.length == 0) return false
+			for (let index: Int = 0; index < cells.length; index++) {
+				const cell = cells[index].trim()
+				if (cell.length < 3) return false
+				for (let charIndex: Int = 0; charIndex < cell.length; charIndex++) {
+					const ch = cell.substring(charIndex, charIndex + 1)
+					if (ch != '-' && ch != ':' && ch != ' ') return false
+				}
+			}
+			return true
+		},
+		splitTableRow(line: string): Array<string> {
+			let value = line.trim()
+			if (value.startsWith('|')) value = value.substring(1)
+			if (value.endsWith('|')) value = value.substring(0, value.length - 1)
+			const rawCells = value.split('|')
+			const cells = new Array<string>()
+			for (let index: Int = 0; index < rawCells.length; index++) {
+				cells.push(rawCells[index].trim())
+			}
+			return cells
+		},
+		tableRows(rawText: string): Array<Array<string>> {
+			const result = new Array<Array<string>>()
+			const lines = rawText.split('\n')
+			for (let index: Int = 0; index < lines.length; index++) {
+				const line = lines[index].trim()
+				if (line.length == 0 || line.indexOf('|') < 0) continue
+				if (this.isTableSeparatorLine(line)) continue
+				result.push(this.splitTableRow(line))
+			}
+			return result
+		},
+		appendTablePlainSegments(segments: Array<ChatTextSegment>, text: string) {
+			const value = this.plainTableMarkdownText(text)
+			if (value.length == 0) return
+			const urlRegex = /https?:\/\/[^\s]+/g
+			let lastIndex = 0
+			let match: RegExpExecArray | null
+			while (true) {
+				match = urlRegex.exec(value)
+				if (match == null) break
+				const start = match.index
+				const url = match[0]!!
+				if (start > lastIndex) segments.push({ kind: 'text', text: value.substring(lastIndex, start), url: '' })
+				segments.push({ kind: 'url', text: url, url: url })
+				lastIndex = start + url.length
+			}
+			if (lastIndex < value.length) segments.push({ kind: 'text', text: value.substring(lastIndex), url: '' })
+		},
+		tableCellSegments(cell: string): Array<ChatTextSegment> {
+			const segments = new Array<ChatTextSegment>()
+			let lastIndex = 0
+			while (true) {
+				const open = cell.indexOf('](', lastIndex)
+				if (open < 0) break
+				const start = cell.lastIndexOf('[', open)
+				const end = cell.indexOf(')', open + 2)
+				if (start < lastIndex || end < 0) break
+				if (start > lastIndex) this.appendTablePlainSegments(segments, cell.substring(lastIndex, start))
+				const label = this.plainTableMarkdownText(cell.substring(start + 1, open)).trim()
+				const url = cell.substring(open + 2, end).trim()
+				if (label.length > 0 && url.length > 0) segments.push({ kind: 'url', text: label, url: url })
+				lastIndex = end + 1
+			}
+			if (lastIndex < cell.length) this.appendTablePlainSegments(segments, cell.substring(lastIndex))
+			if (segments.length == 0) segments.push({ kind: 'text', text: this.plainTableMarkdownText(cell), url: '' })
+			return segments
+		},
+		panelIconSrc(): string {
+			return this.nightMode ? '/static/icons/panel-night.svg' : '/static/icons/panel.svg'
+		},
+			messageRowClass(message: ChatMessageView): string {
+				const classes = new Array<string>()
+				classes.push(message.role == 'user' ? 'message-user' : 'message-assistant')
+				if (message.id.length > 0 && message.id == this.recentMessageId) classes.push('message-row-fresh')
+				return classes.join(' ')
+			},
+			messageDomId(message: ChatMessageView): string {
+				let value = message.id.length > 0 ? message.id : message.role + '-' + message.timestamp
+				value = value.split(':').join('-')
+				value = value.split('.').join('-')
+				value = value.split('/').join('-')
+				value = value.split(' ').join('-')
+				return 'chat-message-' + value
+			},
+		perceptionSwitchClass(): string {
+			const classes = new Array<string>()
+			if (this.perceptionEnabled) classes.push('perception-switch-active')
+			if (this.perceptionBusy) classes.push('perception-switch-busy')
+			return classes.join(' ')
+		},
+		showLiveProcessCard(): boolean {
+			return this.codexRunning || this.liveProcessHasError()
+		},
+		liveProcessTitle(): string {
+			return this.liveProcessHasError() ? 'Codex 回复中断' : 'Codex 正在回复'
+		},
+		liveProcessCardClass(): string {
+			const classes = new Array<string>()
+			if (this.liveProcessHasError()) classes.push('live-process-card-error')
+			if (this.codexRunning) classes.push('live-process-card-active')
+			return classes.join(' ')
+		},
+			liveProcessHasError(): boolean {
+				if (this.processEvents.length == 0) return false
+				const last = this.processEvents[(this.processEvents.length - 1).toInt()] as CodexProcessEvent
+				return last.kind == 'task_error'
+			},
+			liveProcessEvents(): Array<CodexProcessEvent> {
+				const result = new Array<CodexProcessEvent>()
+				let start: Int = 0
+				if (this.processEvents.length > 0) {
+					for (let index: Int = (this.processEvents.length - 1).toInt(); index >= 0; index--) {
+						const event = this.processEvents[index] as CodexProcessEvent
+						if (event.kind == 'task_started' || event.step == 'prepare' || event.step == 'assistant_init' || event.step == 'assistant_wait_user_message') {
+							start = index
+							break
+						}
+					}
+				}
+				if (this.processEvents.length - start > 5) start = (this.processEvents.length - 5).toInt()
+				for (let index: Int = start; index < this.processEvents.length; index++) {
+					const event = this.processEvents[index] as CodexProcessEvent
+					if (event.kind == 'task_complete' && this.codexRunning) continue
+					if (event.text.length == 0 && event.kind != 'task_started') continue
+					result.push(event)
+				}
+				return result
+			},
+		processEventLabel(event: CodexProcessEvent): string {
+			if (event.kind == 'tool_call') {
+				if (event.name == 'exec_command') return '运行命令'
+				if (event.name == 'apply_patch') return '修改文件'
+				if (event.name == 'view_image') return '查看图片'
+				if (event.name == 'imagegen') return '生成图片'
+				return '调用工具'
+			}
+			if (event.kind == 'tool_result') return '工具返回结果'
+			if (event.kind == 'task_started') return '开始处理'
+			if (event.kind == 'task_complete') return '处理完成'
+			if (event.kind == 'task_error') return '错误'
+			if (event.kind == 'user_message_received') return '已接收'
+			return '过程'
+		},
+		liveProcessRowClass(event: CodexProcessEvent): string {
+			return event.kind == 'task_error' ? 'live-process-row-error' : ''
+		},
+		processEventText(event: CodexProcessEvent): string {
+			if (event.text.length == 0) return this.processEventLabel(event)
+			const value = event.text.replace('\n', ' ').trim()
+			if (value.length <= 118) return value
+			return value.substring(0, 118) + '...'
+		},
+		processEventLine(event: CodexProcessEvent): string {
+			const action = this.processEventLabel(event)
+			const text = this.processEventText(event)
+			if (text.length == 0) return action
+			if (text == action) return action
+			if (text.startsWith(action)) return text
+			return action + '：' + text
+		},
+		},
+	}
+</script>

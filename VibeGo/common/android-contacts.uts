@@ -1,0 +1,134 @@
+// #ifdef APP-ANDROID
+import Activity from 'android.app.Activity'
+import Intent from 'android.content.Intent'
+import PackageManager from 'android.content.pm.PackageManager'
+import ContactsContract from 'android.provider.ContactsContract'
+// #endif
+
+export type PickedContact = {
+	name: string
+	phone: string
+}
+
+// #ifdef APP-ANDROID
+const CONTACT_PICK_REQUEST: Int = 41021
+let contactCallback: ContactPickerActivityCallback | null = null
+let pendingContactDone: ((ok: boolean, contact: PickedContact | null, error: string) => void) | null = null
+
+function finishContactPick(ok: boolean, contact: PickedContact | null, error: string): void {
+	const done = pendingContactDone
+	pendingContactDone = null
+	done?.invoke(ok, contact, error)
+}
+
+class ContactPickerActivityCallback extends UniActivityCallback {
+	constructor() {
+		super()
+	}
+
+	override onActivityResult(_params: UniActivityParams, requestCode: Int, resultCode: Int, data: Intent | null): void {
+		if (requestCode != CONTACT_PICK_REQUEST) return
+		if (pendingContactDone == null) return
+		if (resultCode != Activity.RESULT_OK || data == null) {
+			finishContactPick(false, null, '已取消选择联系人')
+			return
+		}
+		const uri = data.getData()
+		if (uri == null) {
+			finishContactPick(false, null, '没有读取到联系人数据')
+			return
+		}
+		const activity = UTSAndroid.getUniActivity()
+		if (activity == null) {
+			finishContactPick(false, null, 'Activity 不可用')
+			return
+		}
+		try {
+			const cursor = activity.getContentResolver().query(uri, null, null, null, null)
+			if (cursor == null) {
+				finishContactPick(false, null, '联系人查询失败')
+				return
+			}
+			try {
+				if (!cursor.moveToFirst()) {
+					finishContactPick(false, null, '联系人为空')
+					return
+				}
+				const nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+				const phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+				const name = nameIndex >= 0 ? (cursor.getString(nameIndex) ?? '') : ''
+				const phone = phoneIndex >= 0 ? (cursor.getString(phoneIndex) ?? '') : ''
+				finishContactPick(true, { name, phone }, '')
+			} finally {
+				cursor.close()
+			}
+		} catch (error) {
+			finishContactPick(false, null, errorText(error))
+		}
+	}
+}
+
+function errorText(error: any): string {
+	try {
+		return error.toString()
+	} catch (_) {
+		return 'unknown error'
+	}
+}
+
+function ensureContactCallback(): void {
+	if (contactCallback != null) return
+	const callback = new ContactPickerActivityCallback()
+	contactCallback = callback
+	UTSAndroid.onActivityCallback(callback)
+}
+
+function requestContactPermission(done: (granted: boolean) => void): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		done(false)
+		return
+	}
+	const permission = 'android.permission.READ_CONTACTS'
+	if (activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+		done(true)
+		return
+	}
+	const permissions = new Array<string>()
+	permissions.push(permission)
+	UTSAndroid.requestSystemPermission(activity, permissions, function (_allRight: boolean, _grantedList: string[]) {
+		done(true)
+	}, function (_doNotAskAgain: boolean, _grantedList: string[]) {
+		done(false)
+	})
+}
+// #endif
+
+export function chooseSystemContact(done: (ok: boolean, contact: PickedContact | null, error: string) => void): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		done(false, null, 'Activity 不可用')
+		return
+	}
+	if (pendingContactDone != null) {
+		done(false, null, '联系人选择仍在进行中')
+		return
+	}
+	requestContactPermission((granted) => {
+		if (!granted) {
+			done(false, null, '未授予通讯录权限')
+			return
+		}
+		ensureContactCallback()
+		pendingContactDone = done
+		try {
+			const intent = new Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+			activity.startActivityForResult(intent, CONTACT_PICK_REQUEST)
+		} catch (error) {
+			pendingContactDone = null
+			done(false, null, errorText(error))
+		}
+	})
+	// #endif
+}

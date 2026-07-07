@@ -1,0 +1,119 @@
+<template>
+	<view class="compact-drawer-overlay" :class="showThreadList ? 'compact-drawer-overlay-with-list' : 'compact-drawer-overlay-menu-only'">
+		<view class="compact-drawer-backdrop" @click="$emit('close')"></view>
+		<view class="compact-drawer-panel" :class="motionActive ? 'compact-drawer-panel-motion-active' : ''" :style="panelStyle" @click.stop="$emit('noop')">
+			<view class="compact-drawer-rail">
+				<view class="compact-drawer-rail-head">
+					<view class="icon-button" hover-class="icon-button-pressed" hover-stay-time="120" @click="$emit('close')">
+						<image class="icon" :src="panelIconSrc()" mode="aspectFit"></image>
+					</view>
+				</view>
+
+				<view class="nav-list compact-drawer-nav-list">
+					<view class="nav-row" hover-class="nav-row-pressed" hover-stay-time="120" :class="activeRailMode == 'conversation' ? 'nav-row-active' : ''" @click="$emit('openConversationList')">
+						<view class="nav-icon-shell" :class="activeRailMode == 'conversation' ? 'nav-icon-shell-active' : ''">
+							<image class="icon" :src="navIconSrc('conversation')" mode="aspectFit"></image>
+						</view>
+						<text class="nav-text">对话</text>
+					</view>
+					<view class="nav-row" hover-class="nav-row-pressed" hover-stay-time="120" @click="$emit('refreshCodexLists')">
+						<view class="nav-icon-shell">
+							<image class="icon" :src="refreshIconSrc()" mode="aspectFit"></image>
+						</view>
+						<text class="nav-text">刷新</text>
+					</view>
+					<view class="nav-row" hover-class="nav-row-pressed" hover-stay-time="120" :class="activeRailMode == 'assistant' ? 'nav-row-active' : ''" @click="$emit('openAssistant')">
+						<view class="nav-icon-shell" :class="activeRailMode == 'assistant' ? 'nav-icon-shell-active' : ''">
+							<image class="icon" :src="navIconSrc('assistant')" mode="aspectFit"></image>
+						</view>
+						<text class="nav-text">{{ assistantText }}</text>
+					</view>
+					<view class="nav-row" hover-class="nav-row-pressed" hover-stay-time="120" :class="activeRailMode == 'annotate' ? 'nav-row-active' : ''" @click="$emit('goWeb')">
+						<view class="nav-icon-shell" :class="activeRailMode == 'annotate' ? 'nav-icon-shell-active' : ''">
+							<image class="icon" :src="navIconSrc('annotate')" mode="aspectFit"></image>
+						</view>
+						<text class="nav-text">阅注</text>
+					</view>
+				</view>
+
+				<view class="sidebar-bottom compact-drawer-sidebar-bottom">
+					<view class="bottom-row" hover-class="bottom-row-pressed" hover-stay-time="120" :class="activeRailMode == 'settings' ? 'bottom-row-active' : ''" @click="$emit('toggleSettings')">
+						<view class="nav-icon-shell" :class="activeRailMode == 'settings' ? 'nav-icon-shell-active' : ''">
+							<image class="icon" :src="settingsIconSrc()" mode="aspectFit"></image>
+						</view>
+						<text class="bottom-text">设置</text>
+					</view>
+				</view>
+			</view>
+
+				<view v-if="showThreadList" class="compact-drawer-list-wrap">
+					<thread-list-pane
+						:projectGroups="projectGroups"
+							:activeThreadId="activeThreadId"
+							:activeProjectId="activeProjectId"
+							:cardStyle="threadListCardStyle"
+								:scrollTargetTop="threadListScrollTargetTop"
+								:scrollRequestKey="threadListScrollRequestKey"
+								:nightMode="nightMode"
+								@newThread="$emit('newThread')"
+					@selectThread="$emit('selectThread', $event)"
+					@toggleProjectGroup="$emit('toggleProjectGroup', $event)"
+					@startProjectThread="$emit('startProjectThread', $event)"
+				></thread-list-pane>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import ThreadListPane from './ThreadListPane.uvue'
+import { type ProjectThreadGroup } from '../modules/index-types.uts'
+
+export default {
+	components: {
+		ThreadListPane,
+	},
+		props: {
+			activeRailMode: { type: String, default: 'assistant' },
+			assistantText: { type: String, default: '助手' },
+			showThreadList: { type: Boolean, default: false },
+			panelStyle: { type: String, default: '' },
+			threadListCardStyle: { type: String, default: '' },
+			projectGroups: {
+				type: Array,
+				default: (): Array<ProjectThreadGroup> => new Array<ProjectThreadGroup>(),
+			},
+				activeThreadId: { type: String, default: '' },
+				activeProjectId: { type: String, default: '' },
+					threadListScrollTargetTop: { type: Number, default: 0 },
+					threadListScrollRequestKey: { type: Number, default: 0 },
+					motionActive: { type: Boolean, default: false },
+					nightMode: { type: Boolean, default: false },
+				},
+		emits: ['close', 'noop', 'openConversationList', 'refreshCodexLists', 'openAssistant', 'goWeb', 'toggleSettings', 'newThread', 'selectThread', 'toggleProjectGroup', 'startProjectThread'],
+		methods: {
+			panelIconSrc(): string {
+				return this.nightMode ? '/static/icons/panel-night.svg' : '/static/icons/panel.svg'
+			},
+			refreshIconSrc(): string {
+				return this.nightMode ? '/static/icons/web-refresh-night.svg' : '/static/icons/web-refresh.svg'
+			},
+			settingsIconSrc(): string {
+				if (this.activeRailMode == 'settings') return '/static/icons/settings-active.svg'
+				return this.nightMode ? '/static/icons/settings-night.svg' : '/static/icons/settings.svg'
+			},
+			navIconSrc(mode: string): string {
+				if (mode == 'conversation') {
+					if (this.activeRailMode == 'conversation') return '/static/icons/message-active.svg'
+					return this.nightMode ? '/static/icons/message-night.svg' : '/static/icons/message.svg'
+				}
+				if (mode == 'assistant') {
+					if (this.activeRailMode == 'assistant') return '/static/icons/bot-active.svg'
+					return this.nightMode ? '/static/icons/bot-night.svg' : '/static/icons/bot.svg'
+				}
+				if (this.activeRailMode == 'annotate') return '/static/icons/plugin-active.svg'
+				return this.nightMode ? '/static/icons/plugin-night.svg' : '/static/icons/plugin.svg'
+			},
+		},
+	}
+</script>

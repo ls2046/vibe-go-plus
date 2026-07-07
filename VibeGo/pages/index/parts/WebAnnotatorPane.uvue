@@ -1,0 +1,152 @@
+<template>
+	<view class="web-card-frame" :style="paneStyle">
+		<view class="web-card-shell">
+			<view v-if="showCompactMenuButton" class="icon-button compact-web-menu-button" :style="compactMenuButtonStyle" @click="$emit('openCompactDrawer')">
+				<image class="icon" src="/static/icons/panel.svg" mode="aspectFit"></image>
+			</view>
+			<view v-if="embeddedWebUrl.length > 0 && annotationSendLoading" class="annotation-send-loading">
+				<view class="thread-loading-spinner annotation-send-loading-spinner" :style="annotationSpinnerStyle()"></view>
+			</view>
+			<view class="embedded-web-container" :style="webContainerStyle">
+				<web-view v-if="embeddedWebUrl.length > 0" :key="webViewKey" class="embedded-web-view" :src="embeddedWebUrl" :style="webContainerStyle"></web-view>
+				<view v-else class="embedded-web-empty" :style="webContainerStyle">
+					<text class="empty-file-title">打开网页</text>
+					<text class="empty-file-text">点击聊天中的链接，或使用默认开发地址进行浏览和标注。</text>
+				</view>
+			</view>
+			<view v-if="embeddedWebUrl.length > 0 && !isAnnotating && !isCapturingScreenshot" class="web-nav-bar">
+				<view class="web-nav-btn" :class="webCanGoBack ? '' : 'disabled'" @click="$emit('webBack')">
+					<image class="web-nav-icon" src="/static/icons/web-back.svg" mode="aspectFit"></image>
+				</view>
+				<view class="web-nav-btn" :class="webCanGoForward ? '' : 'disabled'" @click="$emit('webForward')">
+					<image class="web-nav-icon" src="/static/icons/web-forward.svg" mode="aspectFit"></image>
+				</view>
+				<view class="web-nav-btn" :class="webNavBusy ? 'disabled' : ''" @click="$emit('webReload')">
+					<image class="web-nav-icon" src="/static/icons/web-refresh.svg" mode="aspectFit"></image>
+				</view>
+			</view>
+			<view v-if="embeddedWebUrl.length > 0 && !isCapturingScreenshot" class="fab-bar">
+				<view class="annotation-pill-mini" :class="showAnnotationPill ? 'expanded' : ''">
+					<view class="pill-btn pill-undo" :class="canUndoAnnotation ? '' : 'disabled'" v-show="showAnnotationPill" @click="$emit('undoAnnotation')">
+						<image class="pill-btn-icon" src="/static/icons/annotate-undo.svg" mode="aspectFit"></image>
+					</view>
+					<view class="pill-btn annotate-pill-btn" @click="$emit('toggleAnnotationPill')">
+						<image class="pill-btn-icon" src="/static/icons/annotate.svg" mode="aspectFit"></image>
+					</view>
+				</view>
+				<view class="fab mic-fab" @click="$emit('micClick')">
+					<image class="fab-icon" src="/static/icons/mic-white.svg" mode="aspectFit"></image>
+				</view>
+			</view>
+			<view v-if="isAnnotating" class="annotation-overlay" :style="annotationOverlayStyle">
+				<view class="annotation-stage" :style="annotationStageStyle" @touchstart="$emit('annotationTouchStart', $event)" @touchmove="$emit('annotationTouchMove', $event)" @touchend="$emit('annotationTouchEnd', $event)">
+					<native-shot-image class="annotation-shot" :src="annotationPreviewSrc" :shotWidth="annotationStageWidth" :shotHeight="annotationStageHeight" :style="annotationImageStyle"></native-shot-image>
+					<view v-for="(segment, index) in localAnnotationSegments" :key="'segment-' + index" class="annotation-segment" :style="annotationSegmentStyle(segment)"></view>
+					<view v-for="(dot, index) in localAnnotationDots" :key="'point-' + index" class="annotation-point" :style="annotationPointStyle(dot)"></view>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { type Point, type Segment } from '../modules/index-types.uts'
+import { annotationPointStyle, annotationSegmentStyle } from '../modules/annotation-geometry.uts'
+
+export default {
+	props: {
+		paneStyle: { type: String, default: '' },
+		embeddedWebUrl: { type: String, default: '' },
+		webViewKey: { type: String, default: '' },
+		webContainerStyle: { type: String, default: '' },
+		isCapturingScreenshot: { type: Boolean, default: false },
+		isAnnotating: { type: Boolean, default: false },
+		showAnnotationPill: { type: Boolean, default: false },
+		canUndoAnnotation: { type: Boolean, default: false },
+		webCanGoBack: { type: Boolean, default: false },
+		webCanGoForward: { type: Boolean, default: false },
+		webNavBusy: { type: Boolean, default: false },
+		annotationSendLoading: { type: Boolean, default: false },
+		annotationPreviewSrc: { type: String, default: '' },
+		annotationStageWidth: { type: Number, default: 0 },
+		annotationStageHeight: { type: Number, default: 0 },
+		annotationOverlayStyle: { type: String, default: '' },
+		annotationStageStyle: { type: String, default: '' },
+		annotationImageStyle: { type: String, default: '' },
+		showCompactMenuButton: { type: Boolean, default: false },
+		compactMenuButtonStyle: { type: String, default: '' },
+		annotationSegments: {
+			type: Array,
+			default: (): Array<Segment> => new Array<Segment>(),
+		},
+		annotationDots: {
+			type: Array,
+			default: (): Array<Point> => new Array<Point>(),
+		},
+	},
+	emits: ['openCompactDrawer', 'undoAnnotation', 'toggleAnnotationPill', 'micClick', 'webBack', 'webForward', 'webReload', 'annotationTouchStart', 'annotationTouchMove', 'annotationTouchEnd'],
+	data() {
+		return {
+			localAnnotationSegments: new Array<Segment>(),
+			localAnnotationDots: new Array<Point>(),
+			annotationSpinnerAngle: 0,
+			annotationSpinnerTimer: 0,
+		}
+	},
+	watch: {
+		'annotationSendLoading': {
+			handler(newValue: boolean, _oldValue: boolean) {
+				this.syncAnnotationSpinnerTimer(newValue)
+			},
+			immediate: true,
+		},
+		'annotationSegments': {
+			handler(newValue: Array<Segment>, _oldValue: Array<Segment>) {
+				this.localAnnotationSegments = newValue
+			},
+			immediate: true,
+		},
+		'annotationDots': {
+			handler(newValue: Array<Point>, _oldValue: Array<Point>) {
+				this.localAnnotationDots = newValue
+			},
+			immediate: true,
+		},
+	},
+	unmounted() {
+		this.stopAnnotationSpinnerTimer()
+	},
+	methods: {
+		syncAnnotationSpinnerTimer(loading: boolean) {
+			if (loading) {
+				this.startAnnotationSpinnerTimer()
+			} else {
+				this.stopAnnotationSpinnerTimer()
+			}
+		},
+		startAnnotationSpinnerTimer() {
+			if (this.annotationSpinnerTimer != 0) return
+			this.annotationSpinnerTimer = setInterval(() => {
+				this.annotationSpinnerAngle = this.annotationSpinnerAngle + 10
+				if (this.annotationSpinnerAngle >= 360) this.annotationSpinnerAngle = 0
+			}, 16)
+		},
+		stopAnnotationSpinnerTimer() {
+			if (this.annotationSpinnerTimer != 0) {
+				clearInterval(this.annotationSpinnerTimer)
+				this.annotationSpinnerTimer = 0
+			}
+			this.annotationSpinnerAngle = 0
+		},
+		annotationSpinnerStyle(): string {
+			return 'transform:rotate(' + this.annotationSpinnerAngle.toString() + 'deg);'
+		},
+		annotationSegmentStyle(segment: Segment): string {
+			return annotationSegmentStyle(segment, this.annotationStageWidth, this.annotationStageHeight)
+		},
+		annotationPointStyle(dot: Point): string {
+			return annotationPointStyle(dot, this.annotationStageWidth, this.annotationStageHeight)
+		},
+	},
+}
+</script>

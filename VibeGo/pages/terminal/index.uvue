@@ -1,0 +1,159 @@
+<template>
+	<view class="app-page" :style="pageStyle()">
+		<view class="card">
+			<view class="brand-row">
+				<view class="brand-mark"><text class="brand-mark-text">⌁</text></view>
+				<view class="brand-copy">
+					<text class="title">Codex 工作台已接管终端能力</text>
+					<text class="subtitle">聊天、线程、文件上下文都已合并到平板工作台。</text>
+				</view>
+			</view>
+			<textarea class="prompt" v-model="prompt" placeholder="如果从文件或标注页带入了 prompt，会显示在这里。" />
+			<button class="primary-button" type="default" @click="goWorkbench">打开 Codex 工作台</button>
+			<button class="secondary-button" type="default" @click="startAnnotation">标注当前页面</button>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { setActiveThreadId, setComposerDraft } from '../../common/app-state.uts'
+import { readSystemClipboardFirst } from '../../common/system-clipboard.uts'
+import { startAppAnnotation } from '../../common/annotation-launcher.uts'
+
+export default {
+	data() {
+		return {
+			prompt: '',
+			safeBottom: 0,
+		}
+	},
+	onLoad(options: UTSJSONObject) {
+		this.refreshLayout()
+		const value = options.getString('prompt')
+		if (value != null) {
+			this.prompt = decodeURIComponent(value) ?? ''
+			if (this.prompt.length > 0) {
+				setComposerDraft(this.prompt)
+			}
+		}
+	},
+	onShow() {
+		this.refreshLayout()
+		readSystemClipboardFirst('pages/terminal/index')
+	},
+	onResize(_options: OnResizeOptions) {
+		this.refreshLayout()
+	},
+	methods: {
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+		},
+		bottomSafeInset(safeAreaBottom: number, windowBottom: number): number {
+			const bottom = safeAreaBottom > windowBottom ? safeAreaBottom : windowBottom
+			return bottom > 0 ? bottom : 0
+		},
+		pageStyle(): string {
+			return 'padding-bottom:' + (20 + this.safeBottom).toString() + 'px;'
+		},
+		goWorkbench() {
+			if (this.prompt.length > 0) {
+				setComposerDraft(this.prompt)
+			}
+			setActiveThreadId('')
+			uni.reLaunch({ url: '/pages/index/index' })
+		},
+		startAnnotation() {
+			startAppAnnotation('pages/terminal/index', 'AI 终端')
+		},
+	},
+}
+</script>
+
+<style>
+	.app-page {
+		height: 1000px;
+		padding: 20px;
+		background-color: #eef3ff;
+		justify-content: center;
+	}
+
+	.card {
+		padding: 18px;
+		border-width: 1px;
+		border-color: #dbe3f0;
+		border-style: solid;
+		border-radius: 18px;
+		background-color: #ffffff;
+	}
+
+	.brand-row {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.brand-mark {
+		width: 44px;
+		height: 44px;
+		border-radius: 13px;
+		align-items: center;
+		justify-content: center;
+		background-color: #111827;
+	}
+
+	.brand-mark-text {
+		font-size: 22px;
+		font-weight: 700;
+		color: #ffffff;
+	}
+
+	.brand-copy {
+		flex: 1;
+		margin-left: 12px;
+	}
+
+	.title {
+		font-size: 18px;
+		font-weight: 700;
+		color: #111827;
+	}
+
+	.subtitle {
+		margin-top: 5px;
+		font-size: 12px;
+		line-height: 18px;
+		color: #64748b;
+	}
+
+	.prompt {
+		margin-top: 16px;
+		height: 120px;
+		padding: 12px;
+		border-radius: 14px;
+		background-color: #f8fafc;
+		font-size: 13px;
+		color: #111827;
+	}
+
+	.primary-button {
+		margin-top: 14px;
+		height: 44px;
+		border-radius: 14px;
+		font-size: 14px;
+		font-weight: 700;
+		color: #ffffff;
+		background-color: #111827;
+	}
+
+	.secondary-button {
+		margin-top: 10px;
+		height: 44px;
+		border-radius: 14px;
+		font-size: 14px;
+		font-weight: 700;
+		color: #111827;
+		background-color: #f1f5f9;
+	}
+</style>

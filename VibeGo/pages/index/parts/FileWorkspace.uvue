@@ -1,0 +1,90 @@
+<template>
+	<view class="files-layout" :style="layoutStyle">
+		<view class="files-pane">
+			<view class="panel-header">
+				<view v-if="showCompactMenuButton" class="icon-button compact-file-menu-button" @click="$emit('openCompactDrawer')">
+					<image class="icon" src="/static/icons/panel.svg" mode="aspectFit"></image>
+				</view>
+				<text class="panel-title">文件</text>
+				<button class="text-button" type="default" @click="$emit('reloadTree')">刷新</button>
+			</view>
+			<scroll-view class="tree" scroll-y="true">
+				<view v-for="(node, index) in localNodes" :key="node.path" class="tree-row" :class="selectedPath == node.path ? 'tree-active' : ''" @click="$emit('nodeTap', index)">
+					<text class="tree-indent">{{ indentText(node.level) }}</text>
+					<text class="tree-icon">{{ node.type == 'dir' ? (node.expanded ? '⌄' : '›') : '·' }}</text>
+					<text class="tree-name">{{ node.name }}</text>
+				</view>
+			</scroll-view>
+		</view>
+		<view class="preview-pane">
+			<view class="panel-header">
+				<view class="preview-title-group">
+					<text class="panel-title">{{ selectedPath.length > 0 ? baseName(selectedPath) : '预览' }}</text>
+					<text class="preview-path">{{ selectedPath.length > 0 ? selectedPath : '选择一个文件' }}</text>
+				</view>
+				<button class="text-button" type="default" @click="$emit('sendFileToCodex')">问 Codex</button>
+				<button class="text-button" type="default" @click="$emit('saveFile')">保存</button>
+				<button class="text-button" type="default" @click="$emit('showChat')">聊天</button>
+			</view>
+			<view v-if="selectedPath.length == 0" class="empty-file"><text class="empty-file-title">选择文件</text></view>
+			<textarea v-else class="editor" v-model="fileTextDraft" placeholder="File content" />
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { type TreeNode } from '../modules/index-types.uts'
+
+export default {
+	props: {
+		layoutStyle: { type: String, default: '' },
+		nodes: {
+			type: Array,
+			default: (): Array<TreeNode> => new Array<TreeNode>(),
+		},
+		selectedPath: { type: String, default: '' },
+		fileText: { type: String, default: '' },
+		showCompactMenuButton: { type: Boolean, default: false },
+	},
+	emits: ['openCompactDrawer', 'reloadTree', 'nodeTap', 'sendFileToCodex', 'saveFile', 'showChat', 'fileTextInput'],
+	data() {
+		return {
+			fileTextDraft: '',
+			localNodes: new Array<TreeNode>(),
+		}
+	},
+	watch: {
+		'nodes': {
+			handler(newValue: Array<TreeNode>, _oldValue: Array<TreeNode>) {
+				this.localNodes = newValue
+			},
+			immediate: true,
+		},
+		'fileText': {
+			handler(newValue: string, _oldValue: string) {
+				if (this.fileTextDraft != newValue) this.fileTextDraft = newValue
+			},
+			immediate: true,
+		},
+		'fileTextDraft': {
+			handler(newValue: string, _oldValue: string) {
+				if (newValue != this.fileText) this.$emit('fileTextInput', newValue)
+			},
+		},
+	},
+	methods: {
+		baseName(path: string): string {
+			let value = path
+			while (value.endsWith('/') && value.length > 1) value = value.substring(0, value.length - 1)
+			const index = value.lastIndexOf('/')
+			if (index < 0) return value
+			return value.substring(index + 1)
+		},
+		indentText(level: number): string {
+			let text = ''
+			for (let index: Int = 0; index < level; index++) text = text + '  '
+			return text
+		},
+	},
+}
+</script>

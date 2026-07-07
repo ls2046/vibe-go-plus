@@ -1,0 +1,499 @@
+<template>
+	<view class="web-page" :style="pageStyle">
+		<view class="web-container" :style="webContainerStyle">
+			<web-view v-if="currentUrl.length > 0" :src="currentUrl" class="web-view" :style="webContainerStyle"></web-view>
+			<view v-else class="empty-state" :style="webContainerStyle">
+				<text class="empty-title">打开网页</text>
+				<text class="empty-text">请在 APP 中打开链接进行浏览。</text>
+			</view>
+		</view>
+
+		<view v-if="isAnnotating" class="annotation-overlay" :style="annotationOverlayStyle">
+			<view class="annotation-stage" :style="annotationStageStyle" @touchstart="onAnnotationTouchStart" @touchmove="onAnnotationTouchMove" @touchend="onAnnotationTouchEnd">
+				<native-shot-image class="annotation-shot" :src="annotationPreviewSrc" :shotWidth="annotationStageWidth" :shotHeight="annotationStageHeight" :style="annotationImageStyle"></native-shot-image>
+				<view v-for="(segment, index) in annotationSegments" :key="'segment-' + index" class="annotation-segment" :style="annotationSegmentStyle(segment)"></view>
+				<view v-for="(dot, index) in annotationDots" :key="'point-' + index" class="annotation-point" :style="annotationPointStyle(dot)"></view>
+			</view>
+			<view v-if="!annotationSubmitting" class="annotation-pill" :style="annotationPillStyle">
+				<view class="annotation-pill-action" @click="undoAnnotation">
+					<image class="annotation-pill-icon" src="/static/icons/annotate-undo.svg" mode="aspectFit"></image>
+				</view>
+				<view class="annotation-pill-divider"></view>
+				<view class="annotation-pill-action" @click="clearAnnotation">
+					<image class="annotation-pill-icon" src="/static/icons/annotate-trash.svg" mode="aspectFit"></image>
+				</view>
+				<view class="annotation-pill-divider"></view>
+				<view class="annotation-pill-action annotation-pill-submit" @click="submitAnnotation">
+					<image class="annotation-pill-icon" src="/static/icons/annotate-check.svg" mode="aspectFit"></image>
+				</view>
+				<view class="annotation-pill-divider"></view>
+				<view class="annotation-pill-action" @click="closeAnnotation">
+					<image class="annotation-pill-icon" src="/static/icons/annotate-close.svg" mode="aspectFit"></image>
+				</view>
+			</view>
+		</view>
+
+		<view v-if="currentUrl.length > 0 && !isAnnotating && !annotationBusy" class="annotate-fab" :style="annotateFabStyle" @click="startAnnotationCapture">
+			<text class="annotate-fab-text">标注</text>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { getDevUrl } from '../../common/app-state.uts'
+import { captureCurrentWindowLayoutRegion, type ScreenshotResult } from '../../common/android-shot.uts'
+import { uploadAnnotation } from '../../common/mobile-api.uts'
+import { readSystemClipboardFirst } from '../../common/system-clipboard.uts'
+
+type Point = {
+	x: number
+	y: number
+}
+
+type Segment = {
+	x1: number
+	y1: number
+	x2: number
+	y2: number
+}
+
+export default {
+	data() {
+		return {
+			currentUrl: '',
+			windowWidth: 375,
+			windowHeight: 812,
+			safeTop: 0,
+			safeBottom: 34,
+			isAnnotating: false,
+			annotationBusy: false,
+			annotationSubmitting: false,
+			annotationImagePath: '',
+			annotationPreviewSrc: '',
+			annotationDots: new Array<Point>(),
+			annotationSegments: new Array<Segment>(),
+			annotationStrokeGroups: new Array<number>(),
+			annotationStrokeSegmentGroups: new Array<number>(),
+			annotationStageWidth: 375,
+			annotationStageHeight: 720,
+			annotationStrokePointCount: 0,
+			annotationStrokeSegmentCount: 0,
+			annotationDrawing: false,
+			annotationLastPoint: null as Point | null,
+		}
+	},
+	computed: {
+		pageStyle(): string {
+			const height = this.windowHeight - this.safeBottom
+			const safeHeight = height > 0 ? height : 0
+			return 'width:' + this.windowWidth.toString() + 'px;height:' + safeHeight.toString() + 'px;padding-bottom:' + this.safeBottom.toString() + 'px;'
+		},
+		webContainerStyle(): string {
+			return 'top:' + this.webTop().toString() + 'px;height:' + this.webHeight().toString() + 'px;'
+		},
+		annotateFabStyle(): string {
+			const bottom = this.safeBottom + 20
+			return 'right:20px;bottom:' + bottom.toString() + 'px;'
+		},
+		annotationOverlayStyle(): string {
+			return 'top:' + this.webTop().toString() + 'px;width:' + this.windowWidth.toString() + 'px;height:' + this.webHeight().toString() + 'px;'
+		},
+		annotationStageStyle(): string {
+			return 'width:' + this.annotationStageWidth.toString() + 'px;height:' + this.annotationStageHeight.toString() + 'px;'
+		},
+		annotationImageStyle(): string {
+			return 'width:' + this.annotationStageWidth.toString() + 'px;height:' + this.annotationStageHeight.toString() + 'px;'
+		},
+		annotationPillStyle(): string {
+			const bottom = this.safeBottom > 0 ? 14 : 18
+			const width = 206
+			const left = Math.floor((this.windowWidth - width) / 2)
+			const safeLeft = left > 12 ? left : 12
+			return 'left:' + safeLeft.toString() + 'px;bottom:' + bottom.toString() + 'px;width:' + width.toString() + 'px;'
+		},
+	},
+	onLoad(options: UTSJSONObject) {
+		const rawOpenUrl = options.getString('openUrl') ?? ''
+		if (rawOpenUrl.length > 0) {
+			const decoded = decodeURIComponent(rawOpenUrl) ?? ''
+			this.currentUrl = decoded
+			return
+		}
+		this.currentUrl = getDevUrl()
+	},
+	onReady() {
+		this.refreshLayout()
+	},
+	onShow() {
+		this.refreshLayout()
+		readSystemClipboardFirst('pages/web/index')
+	},
+	onResize(options: OnResizeOptions) {
+		const size = options.size
+		this.windowWidth = size.windowWidth
+		this.windowHeight = size.windowHeight
+		try {
+			const info = uni.getSystemInfoSync()
+			this.safeBottom = this.bottomInset(info.safeAreaInsets.bottom, info.windowBottom)
+		} catch (_) {}
+		if (this.isAnnotating) this.syncAnnotationStageSize()
+	},
+	methods: {
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.windowWidth = info.windowWidth
+				this.windowHeight = info.windowHeight
+				const statusBarHeight = info.statusBarHeight
+				this.safeTop = statusBarHeight > 0 ? statusBarHeight : 0
+				this.safeBottom = this.bottomInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+			if (this.isAnnotating) this.syncAnnotationStageSize()
+		},
+		bottomInset(safeAreaBottom: number, windowBottom: number): number {
+			const bottom = safeAreaBottom > windowBottom ? safeAreaBottom : windowBottom
+			return bottom > 0 ? bottom : 0
+		},
+		contentTopInset(): number {
+			if (this.safeTop <= 0) return 0
+			const inset = this.safeTop - 10
+			return inset > 12 ? inset : 12
+		},
+		webTop(): number {
+			return this.contentTopInset()
+		},
+		webHeight(): number {
+			const height = this.windowHeight - this.webTop() - this.safeBottom
+			return height > 120 ? height : 120
+		},
+		syncAnnotationStageSize() {
+			this.annotationStageWidth = this.windowWidth
+			this.annotationStageHeight = this.webHeight()
+		},
+		captureWebViewRegion(done: (result: ScreenshotResult) => void) {
+			// #ifdef APP-ANDROID
+			captureCurrentWindowLayoutRegion(0, this.webTop(), this.windowWidth, this.webHeight(), this.windowWidth, this.windowHeight, done)
+			// #endif
+
+			// #ifndef APP-ANDROID
+			done({ ok: false, path: '', error: '当前平台不支持 Android 原生截图' })
+			// #endif
+		},
+		startAnnotationCapture() {
+			if (this.currentUrl.length == 0) {
+				uni.showToast({ title: '请先打开网页', icon: 'none' })
+				return
+			}
+			if (this.annotationBusy) return
+			this.annotationBusy = true
+			setTimeout(() => {
+				this.captureWebViewRegion((result) => {
+					this.annotationBusy = false
+					if (!result.ok) {
+						uni.showToast({ title: result.error.length > 0 ? result.error : '截图失败', icon: 'none' })
+						return
+					}
+					this.startAnnotation(result.path)
+				})
+			}, 80)
+		},
+		startAnnotation(imagePath: string) {
+			this.annotationImagePath = imagePath
+			this.annotationPreviewSrc = imagePath
+			this.annotationDots = new Array<Point>()
+			this.annotationSegments = new Array<Segment>()
+			this.annotationStrokeGroups = new Array<number>()
+			this.annotationStrokeSegmentGroups = new Array<number>()
+			this.annotationStrokePointCount = 0
+			this.annotationStrokeSegmentCount = 0
+			this.annotationDrawing = false
+			this.annotationLastPoint = null
+			this.syncAnnotationStageSize()
+			this.isAnnotating = true
+		},
+		closeAnnotation() {
+			if (this.annotationBusy) return
+			this.isAnnotating = false
+			this.annotationSubmitting = false
+			this.annotationDrawing = false
+			this.annotationStrokePointCount = 0
+			this.annotationImagePath = ''
+			this.annotationPreviewSrc = ''
+			this.annotationDots = new Array<Point>()
+			this.annotationSegments = new Array<Segment>()
+			this.annotationStrokeGroups = new Array<number>()
+			this.annotationStrokeSegmentGroups = new Array<number>()
+			this.annotationStrokeSegmentCount = 0
+			this.annotationLastPoint = null
+		},
+		annotationPoint(event: UniTouchEvent): Point | null {
+			if (event.touches.length <= 0) return null
+			const touch: UniTouch = event.touches[0]
+			const width = this.annotationStageWidth > 0 ? this.annotationStageWidth : this.windowWidth
+			const height = this.annotationStageHeight > 0 ? this.annotationStageHeight : this.webHeight()
+			if (width <= 0 || height <= 0) return null
+			let x = touch.clientX / width
+			let y = (touch.clientY - this.webTop()) / height
+			if (x < 0) x = 0
+			if (x > 1) x = 1
+			if (y < 0) y = 0
+			if (y > 1) y = 1
+			return { x, y }
+		},
+		appendAnnotationPoint(point: Point | null) {
+			if (point == null) return
+			if (this.annotationLastPoint != null) {
+				const lastPoint = this.annotationLastPoint
+				if (lastPoint != null) {
+					this.annotationSegments.push({
+						x1: lastPoint.x,
+						y1: lastPoint.y,
+						x2: point.x,
+						y2: point.y,
+					})
+					this.annotationStrokeSegmentCount = this.annotationStrokeSegmentCount + 1
+				}
+			}
+			this.annotationDots.push(point)
+			this.annotationStrokePointCount = this.annotationStrokePointCount + 1
+			this.annotationLastPoint = point
+		},
+		onAnnotationTouchStart(event: UniTouchEvent) {
+			if (!this.isAnnotating || this.annotationBusy) return
+			this.annotationDrawing = true
+			this.annotationStrokePointCount = 0
+			this.annotationStrokeSegmentCount = 0
+			this.annotationLastPoint = null
+			this.appendAnnotationPoint(this.annotationPoint(event))
+		},
+		onAnnotationTouchMove(event: UniTouchEvent) {
+			if (!this.isAnnotating || !this.annotationDrawing || this.annotationBusy) return
+			this.appendAnnotationPoint(this.annotationPoint(event))
+		},
+		onAnnotationTouchEnd(_: UniTouchEvent) {
+			if (!this.isAnnotating) return
+			if (this.annotationDrawing && this.annotationStrokePointCount > 0) {
+				this.annotationStrokeGroups.push(this.annotationStrokePointCount)
+				this.annotationStrokeSegmentGroups.push(this.annotationStrokeSegmentCount)
+			}
+			this.annotationDrawing = false
+			this.annotationStrokePointCount = 0
+			this.annotationStrokeSegmentCount = 0
+			this.annotationLastPoint = null
+		},
+		undoAnnotation() {
+			if (this.annotationBusy) return
+			if (this.annotationDrawing) return
+			if (this.annotationStrokeGroups.length <= 0) return
+			const pointCount = this.annotationStrokeGroups.pop()
+			const segmentCount = this.annotationStrokeSegmentGroups.pop()
+			if (pointCount == null || segmentCount == null) return
+			for (let index: Int = 0; index < pointCount; index++) {
+				if (this.annotationDots.length > 0) this.annotationDots.pop()
+			}
+			for (let index: Int = 0; index < segmentCount; index++) {
+				if (this.annotationSegments.length > 0) this.annotationSegments.pop()
+			}
+		},
+		clearAnnotation() {
+			if (this.annotationBusy) return
+			if (this.annotationDrawing) return
+			this.annotationDots = new Array<Point>()
+			this.annotationSegments = new Array<Segment>()
+			this.annotationStrokeGroups = new Array<number>()
+			this.annotationStrokeSegmentGroups = new Array<number>()
+			this.annotationStrokePointCount = 0
+			this.annotationStrokeSegmentCount = 0
+			this.annotationLastPoint = null
+		},
+		submitAnnotation() {
+			if (this.annotationBusy) return
+			if (this.annotationImagePath.length == 0) {
+				uni.showToast({ title: '截图不可用', icon: 'none' })
+				return
+			}
+			if (this.annotationDots.length == 0 && this.annotationSegments.length == 0) {
+				uni.showToast({ title: '请先标注', icon: 'none' })
+				return
+			}
+
+			this.annotationBusy = true
+			this.annotationSubmitting = true
+			setTimeout(() => {
+				this.captureWebViewRegion((result) => {
+					this.annotationSubmitting = false
+					if (!result.ok) {
+						this.annotationBusy = false
+						uni.showToast({ title: result.error.length > 0 ? result.error : '合成截图失败', icon: 'none' })
+						return
+					}
+					const annotatedPath = result.path
+					const payload = JSON.stringify({
+						sourceType: 'web',
+						sourcePage: 'pages/web/index',
+						sourceTitle: '阅注',
+						sourceUrl: this.currentUrl,
+						baseImagePath: this.annotationImagePath,
+						annotatedImagePath: annotatedPath,
+						annotations: {
+							rects: new Array<any>(),
+							dots: this.annotationDots,
+							segments: this.annotationSegments,
+							texts: new Array<any>(),
+						},
+						createdAt: new Date().toISOString(),
+					})
+					uploadAnnotation(annotatedPath, payload, (ok, _record, error) => {
+						this.annotationBusy = false
+						if (ok) {
+							uni.showToast({ title: '标注已上传', icon: 'success' })
+							this.closeAnnotation()
+						} else {
+							uni.showToast({ title: error, icon: 'none' })
+						}
+					})
+				})
+			}, 80)
+		},
+		annotationSegmentStyle(segment: Segment): string {
+			const width = this.annotationStageWidth > 0 ? this.annotationStageWidth : this.windowWidth
+			const height = this.annotationStageHeight > 0 ? this.annotationStageHeight : this.webHeight()
+			const startX = segment.x1 * width
+			const startY = segment.y1 * height
+			const endX = segment.x2 * width
+			const endY = segment.y2 * height
+			const dx = endX - startX
+			const dy = endY - startY
+			const length = Math.sqrt((dx * dx) + (dy * dy))
+			const angle = Math.atan2(dy, dx) * 180 / Math.PI
+			const safeLength = Math.ceil(length) + 2
+			return 'left:' + startX.toString() + 'px;top:' + (startY - 3).toString() + 'px;width:' + safeLength.toString() + 'px;transform:rotate(' + angle.toString() + 'deg);transform-origin:0 50%;'
+		},
+		annotationPointStyle(dot: Point): string {
+			const width = this.annotationStageWidth > 0 ? this.annotationStageWidth : this.windowWidth
+			const height = this.annotationStageHeight > 0 ? this.annotationStageHeight : this.webHeight()
+			const left = (dot.x * width) - 4
+			const top = (dot.y * height) - 4
+			return 'left:' + left.toString() + 'px;top:' + top.toString() + 'px;'
+		},
+	},
+}
+</script>
+
+<style>
+	.web-page {
+		position: relative;
+		background-color: #f8fafc;
+	}
+
+	.web-container {
+		position: absolute;
+		left: 0;
+		width: 100%;
+		overflow: hidden;
+	}
+
+	.web-view {
+		width: 100%;
+	}
+
+	.annotation-overlay {
+		position: absolute;
+		left: 0;
+		z-index: 20;
+	}
+
+	.annotation-stage,
+	.annotation-shot {
+		position: absolute;
+		left: 0;
+		top: 0;
+	}
+
+	.annotation-segment {
+		position: absolute;
+		height: 6px;
+		border-radius: 999px;
+		background-color: #ef4444;
+	}
+
+	.annotation-point {
+		position: absolute;
+		width: 8px;
+		height: 8px;
+		border-radius: 999px;
+		background-color: #ef4444;
+	}
+
+	.annotation-pill {
+		position: absolute;
+		height: 44px;
+		border-radius: 6px;
+		background-color: #ffffff;
+		flex-direction: row;
+		align-items: center;
+		justify-content: center;
+		border-width: 1px;
+		border-color: rgba(226, 232, 240, 0.9);
+		border-style: solid;
+		box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+		z-index: 24;
+	}
+
+	.annotation-pill-action {
+		flex: 1;
+		height: 44px;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.annotation-pill-submit {
+		background-color: #ffffff;
+	}
+
+	.annotation-pill-divider {
+		width: 1px;
+		height: 24px;
+		background-color: #e5e7eb;
+	}
+
+	.annotation-pill-icon {
+		width: 22px;
+		height: 22px;
+	}
+
+	.annotate-fab {
+		position: absolute;
+		width: 72px;
+		height: 48px;
+		border-radius: 24px;
+		align-items: center;
+		justify-content: center;
+		background-color: #101820;
+		box-shadow: 0 8px 18px rgba(16, 24, 32, 0.24);
+		z-index: 20;
+	}
+
+	.annotate-fab-text {
+		font-size: 15px;
+		font-weight: 700;
+		color: #ffffff;
+	}
+
+	.empty-state {
+		align-items: center;
+		justify-content: center;
+	}
+
+	.empty-title {
+		font-size: 20px;
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.empty-text {
+		margin-top: 8px;
+		font-size: 13px;
+		color: #64748b;
+	}
+</style>

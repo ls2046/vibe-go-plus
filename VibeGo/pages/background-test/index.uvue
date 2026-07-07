@@ -1,0 +1,1180 @@
+<template>
+	<view class="app-page" :style="pageStyle()">
+		<view class="window" :style="windowStyle()">
+			<view class="main-surface" :style="mainSurfaceStyle()">
+				<scroll-view class="capability-scroll" :style="capabilityScrollStyle()" scroll-y="true">
+		<view class="topbar">
+			<view class="brand-mark"><text class="brand-mark-text">AX</text></view>
+			<view class="topbar-info">
+				<text class="topbar-title">Android 能力中心</text>
+				<text class="topbar-subtitle">{{ statusText }}</text>
+			</view>
+			<view class="status-pill" :class="heartbeatActive ? 'ok' : 'pending'"><text class="status-pill-text">{{ heartbeatActive ? 'running' : 'idle' }}</text></view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">文件与 APP 互动</text>
+				<text class="panel-meta">SEND / SEND_MULTIPLE / VIEW / deeplink</text>
+			</view>
+			<text class="metric-label">最近进入</text>
+			<text class="value-text">{{ lastLinkSummary() }}</text>
+			<text class="path-text">{{ lastLinkUri }}</text>
+			<text class="path-text">{{ lastLinkText }}</text>
+			<text class="path-text">{{ fileStatus }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="openUploadMenu">选图/拍照/文件</button>
+				<button class="button" type="default" @click="openBrowserTest">浏览器</button>
+				<button class="button" type="default" @click="openSelfDeeplink">回跳</button>
+			</view>
+			<view class="row">
+				<button class="button" type="default" @click="openSettingsTest">系统设置</button>
+				<button class="button" type="default" @click="refreshAppLink">刷新最近来源</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">AutoJS 调度桥</text>
+				<text class="panel-meta">HTTP runner / accessibility</text>
+			</view>
+			<text class="metric-label">Runner 地址</text>
+			<input class="field" v-model="automationEndpoint" placeholder="http://127.0.0.1:9317/run" />
+			<text class="metric-label">候选 APP</text>
+			<text class="value-text">{{ automationRunnersText }}</text>
+			<text class="metric-label">测试结果</text>
+			<text class="value-text">{{ automationTaskText }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="sendAutomationPing">发送 ping</button>
+				<button class="button" type="default" @click="refreshAutomationTest">检测安装</button>
+				<button class="button" type="default" @click="openFirstAutomationApp">拉起 AutoJS</button>
+			</view>
+			<view class="row">
+				<button class="button" type="default" @click="openAutomationAccessibility">无障碍设置</button>
+			</view>
+			<text class="hint">默认只走本机 HTTP：POST /run。VibeGo 不内置无障碍服务，自动化动作交给 AutoJS/AutoX.js 这类外部 runner。</text>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">屏幕与悬浮窗</text>
+				<text class="panel-meta">overlay / MediaProjection session</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">悬浮窗权限</text>
+				<text class="metric-value" :class="overlayGranted ? 'ok-text' : 'fail-text'">{{ overlayGranted ? 'granted' : 'missing' }}</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">识屏授权</text>
+				<text class="metric-value" :class="projectionAuthorized ? 'ok-text' : 'fail-text'">{{ projectionAuthorized ? 'authorized' : 'missing' }}</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">识屏会话</text>
+				<text class="metric-value" :class="projectionActive ? 'ok-text' : 'fail-text'">{{ projectionActive ? 'active' : 'idle' }}</text>
+			</view>
+			<text class="value-text">{{ screenText }}</text>
+			<text class="path-text">{{ screenFramePath }}</text>
+			<text class="path-text">{{ screenFrameMeta }}</text>
+			<text class="path-text">{{ screenFrameError }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="requestScreenCaptureTest">请求屏幕采集授权</button>
+				<button class="button" type="default" @click="openOverlaySettingsTest">悬浮窗设置</button>
+				<button class="button" type="default" @click="captureOnceTest">抓取当前屏幕</button>
+				<button class="button" type="default" @click="stopScreenCaptureTest">结束识屏</button>
+			</view>
+			<text class="hint">这里只验证正规 MediaProjection 会话。是否能识屏只看系统授权和前台服务，不再把 overlay 当作前置条件。</text>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">文件输出</text>
+				<text class="panel-meta">FileProvider / share / open</text>
+			</view>
+			<text class="metric-label">输出路径</text>
+			<input class="field" v-model="fileOutputPath" placeholder="为空时自动生成测试文件" />
+			<text class="value-text">{{ fileOutputText }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="createFileOutputTest">生成测试文件</button>
+				<button class="button" type="default" @click="shareTestFile">系统分享</button>
+				<button class="button" type="default" @click="openTestFile">打开方式</button>
+			</view>
+			<view class="row">
+				<button class="button" type="default" @click="saveDownloadsTest">保存 Downloads</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">定位与地图</text>
+				<text class="panel-meta">uni-location / uni-map</text>
+			</view>
+			<text class="metric-label">当前位置</text>
+			<text class="value-text">{{ locationText }}</text>
+			<text class="metric-label">选点结果</text>
+			<text class="value-text">{{ pickedLocationText }}</text>
+			<text class="hint">请把 manifest.json 里的 `YOUR_TENCENT_LOCATION_KEY` 和 `YOUR_TENCENT_MAP_KEY` 替换为真实值后再重打基座。</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="requestLocationTest">定位</button>
+				<button class="button" type="default" @click="chooseLocationTest">选点</button>
+				<button class="button" type="default" @click="openCurrentLocation">打开地图</button>
+			</view>
+			<view class="row">
+				<button class="button" type="default" @click="openLocationSettingsTest">定位设置</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">BLE 预埋</text>
+				<text class="panel-meta">权限 / 开关 / 自定义桥接预留</text>
+			</view>
+			<text class="value-text">{{ bluetoothText }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="requestBluetoothTest">申请蓝牙权限</button>
+				<button class="button" type="default" @click="openBluetoothSettingsTest">蓝牙设置</button>
+				<button class="button" type="default" @click="refreshBluetoothTest">刷新</button>
+			</view>
+			<text class="hint">这轮基座先把 BLE 权限和系统入口铺好。若要做扫描、连接、特征值读写，下一步再接专用 BLE 插件或原生桥。</text>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">扫码与通讯录</text>
+				<text class="panel-meta">camera / album / contacts</text>
+			</view>
+			<text class="metric-label">扫码结果</text>
+			<text class="value-text">{{ scanText }}</text>
+			<text class="metric-label">联系人</text>
+			<text class="value-text">{{ contactText }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="scanCodeTest">扫码</button>
+				<button class="button" type="default" @click="chooseContactTest">选联系人</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">WebView</text>
+				<text class="panel-meta">system native</text>
+			</view>
+			<text class="metric-label">Push 状态</text>
+			<text class="value-text">已移除 uni-push 模块与运行时调用</text>
+			<text class="metric-label">WebView 内核</text>
+			<text class="value-text">{{ webViewStatus }}</text>
+			<text class="hint">当前 Android 继续使用系统原生 WebView，不引入第三方 WebView 内核。</text>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">通知监听</text>
+				<text class="panel-meta">NotificationListenerService</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">通知使用权</text>
+				<text class="metric-value" :class="notificationListenerEnabled ? 'ok-text' : 'fail-text'">{{ notificationListenerEnabled ? 'enabled' : 'missing' }}</text>
+			</view>
+			<text class="value-text">{{ notificationListenerText }}</text>
+			<scroll-view class="mini-logs" scroll-y="true">
+				<text v-if="notificationEvents.length == 0" class="log-text">暂无通知事件</text>
+				<text v-for="(line, index) in notificationEvents" :key="index" class="log-text">{{ line }}</text>
+			</scroll-view>
+			<view class="row">
+				<button class="button accent" type="default" @click="openNotificationListenerSettingsTest">通知使用权设置</button>
+				<button class="button" type="default" @click="refreshNotificationListenerTest">刷新通知事件</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">本地通知中心</text>
+				<text class="panel-meta">local message</text>
+			</view>
+			<text class="metric-label">通知标题</text>
+			<input class="field" v-model="localNotificationTitle" placeholder="VibeGo" />
+			<text class="metric-label">通知内容</text>
+			<input class="field" v-model="localNotificationText" placeholder="你有一条新的本地消息" />
+			<text class="metric-label">最近通知</text>
+			<text class="value-text">{{ localNotificationSummary() }}</text>
+			<text class="path-text">{{ localNotificationStatus }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="sendLocalNotificationNow">立即通知</button>
+				<button class="button" type="default" @click="scheduleLocalNotificationTest">10 秒后通知</button>
+				<button class="button" type="default" @click="cancelLocalNotificationTest">取消通知</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">诊断中心</text>
+				<text class="panel-meta">device / server / CDP / permissions</text>
+			</view>
+			<text class="value-text">{{ diagnosticsText }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="refreshDiagnostics">刷新诊断</button>
+			</view>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">后台能力</text>
+				<text class="panel-meta">notification / exact alarm / heartbeat</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">通知权限</text>
+				<text class="metric-value" :class="notificationGranted ? 'ok-text' : 'fail-text'">{{ notificationGranted ? 'granted' : 'missing' }}</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">精确闹钟</text>
+				<text class="metric-value" :class="exactAlarmGranted ? 'ok-text' : 'fail-text'">{{ exactAlarmGranted ? 'enabled' : 'blocked' }}</text>
+			</view>
+			<view class="metric-row">
+				<text class="metric-label">最近心跳</text>
+				<text class="metric-value">{{ lastHeartbeatStatus.length > 0 ? lastHeartbeatStatus : '-' }}</text>
+			</view>
+			<text class="path-text">{{ serverUrl }}</text>
+			<text class="path-text">{{ lastHeartbeatAt }}</text>
+			<view class="row">
+				<button class="button accent" type="default" @click="requestPermissions">申请权限</button>
+				<button class="button" type="default" @click="openAlarmSettings">闹钟设置</button>
+				<button class="button" type="default" @click="refreshStatus">刷新</button>
+			</view>
+			<view class="row">
+				<button class="button accent" type="default" @click="startHeartbeatTest">开始心跳</button>
+				<button class="button" type="default" @click="stopHeartbeatTest">停止心跳</button>
+			</view>
+			<view class="row">
+				<button class="button accent" type="default" @click="scheduleAlarmTest">1 分钟后播音</button>
+				<button class="button" type="default" @click="cancelAlarmTest">取消闹钟</button>
+				<button class="button" type="default" @click="stopPlaybackTest">停止播放</button>
+			</view>
+		</view>
+
+		<view class="panel log-panel">
+			<view class="panel-header">
+				<text class="panel-title">后台日志</text>
+				<text class="panel-meta">latest first</text>
+			</view>
+			<scroll-view class="logs" scroll-y="true">
+				<text v-if="logs.length == 0" class="log-text">暂无日志</text>
+				<text v-for="(line, index) in logs" :key="index" class="log-text">{{ line }}</text>
+			</scroll-view>
+		</view>
+				<view class="scroll-bottom-spacer"></view>
+				</scroll-view>
+
+		<view class="bottom-tabs" :style="bottomTabsStyle()">
+			<view class="tab" @click="goHome"><text class="tab-text">工作台</text></view>
+			<view class="tab" @click="goFiles"><text class="tab-text">文件</text></view>
+			<view class="tab" @click="goTerminal"><text class="tab-text">终端</text></view>
+			<view class="tab" @click="startAnnotation"><text class="tab-text">标注</text></view>
+		</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+	import { apiUrl, getAppLinkRecord, getServerUrl, type AppLinkRecord } from '../../common/app-state.uts'
+	import { detectInstalledRunners, getAutomationEndpoint, openAccessibilitySettings, openAutomationRunner, sendAutomationTask, setAutomationEndpoint, type AutomationRunner } from '../../common/android-automation.uts'
+	import { chooseSystemContact } from '../../common/android-contacts.uts'
+	import { getBluetoothCapability, requestBluetoothCapability, type BluetoothCapability } from '../../common/android-bluetooth.uts'
+	import { createTestOutputFile, openFile, saveTextToDownloads, shareFile, type FileOutputResult } from '../../common/android-file-output.uts'
+	import { getNotificationListenerState, openNotificationListenerSettings } from '../../common/android-notification-listener.uts'
+	import { openBluetoothSettings, openExternalUri, openGeoLocation, openLocationSettings, openSystemSettings } from '../../common/android-open.uts'
+	import { captureOnce, getScreenCapability, openOverlaySettings, requestCapturePermission, stopCaptureSession, type ScreenCapability, type ScreenCaptureFrameResult } from '../../common/android-screen.uts'
+import { readSystemClipboardFirst } from '../../common/system-clipboard.uts'
+import { uploadMobileFile } from '../../common/mobile-api.uts'
+import { startAppAnnotation } from '../../common/annotation-launcher.uts'
+import { requestProbePermissions, openExactAlarmSettings, startHeartbeat, stopHeartbeat, scheduleAlarm, cancelAlarm, stopPlayback, showLocalNotification, scheduleLocalNotification, cancelLocalNotification, getProbeStatus, type ProbeStatus, type ProbeActionResult } from '@/uni_modules/vibego-background-probe'
+
+export default {
+	data() {
+		return {
+			serverUrl: '',
+			statusText: '统一验证 Android 自定义基座能力',
+			lastLinkAction: '',
+			lastLinkSource: '',
+			lastLinkUri: '',
+			lastLinkMime: '',
+			lastLinkText: '',
+			lastLinkAt: '',
+			fileStatus: '等待测试文件入口',
+			automationEndpoint: getAutomationEndpoint(),
+			automationRunnersText: '未检测',
+			automationTaskText: '未发送',
+			overlayGranted: false,
+			projectionAuthorized: false,
+			projectionActive: false,
+			screenText: '未检测',
+			screenFramePath: '',
+			screenFrameMeta: '',
+			screenFrameError: '',
+			fileOutputPath: '',
+			fileOutputText: '未测试',
+			locationText: '未获取',
+			pickedLocationText: '未选点',
+			currentLatitude: 0,
+			currentLongitude: 0,
+			scanText: '未扫码',
+			contactText: '未选择联系人',
+			bluetoothText: '未检测',
+			webViewStatus: '系统原生 WebView',
+			notificationListenerEnabled: false,
+			notificationListenerText: '未检测',
+			notificationEvents: new Array<string>(),
+			localNotificationTitle: 'VibeGo',
+			localNotificationText: '你有一条新的本地消息',
+			localNotificationAt: '',
+			localNotificationLastTitle: '',
+			localNotificationLastText: '',
+			localNotificationStatus: '未发送',
+			diagnosticsText: '未刷新',
+			notificationGranted: false,
+			exactAlarmGranted: false,
+			heartbeatActive: false,
+			playbackActive: false,
+			lastHeartbeatAt: '',
+			lastHeartbeatStatus: '',
+			lastAlarmAt: '',
+			logs: new Array<string>(),
+			refreshTimer: 0,
+			windowWidth: 1080,
+			windowHeight: 900,
+			safeTop: 0,
+			safeBottom: 0,
+		}
+	},
+	onLoad() {
+		this.initLayout()
+		this.serverUrl = getServerUrl()
+		this.refreshAppLink()
+		this.refreshCapabilityStatus()
+		uni.$on('mobile-app-link', this.onAppLinkEvent)
+	},
+		onShow() {
+		this.refreshLayout()
+		readSystemClipboardFirst('pages/background-test/index')
+		this.serverUrl = getServerUrl()
+		this.refreshCapabilityStatus()
+		if (this.refreshTimer == 0) {
+			this.refreshTimer = setInterval(() => {
+				this.refreshStatus()
+				this.refreshOverlayScreen()
+			}, 5000)
+		}
+	},
+	onHide() {
+		this.clearRefreshTimer()
+	},
+	onResize(options: OnResizeOptions) {
+		const size = options.size
+		this.applyLayout(size.windowWidth, size.windowHeight)
+	},
+	onUnload() {
+		this.clearRefreshTimer()
+		uni.$off('mobile-app-link', this.onAppLinkEvent)
+	},
+	methods: {
+		initLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.applyLayout(info.windowWidth, info.windowHeight)
+				const statusBarHeight = info.statusBarHeight
+				if (statusBarHeight > 0) this.safeTop = statusBarHeight
+				this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+		},
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.applyLayout(info.windowWidth, info.windowHeight)
+				const statusBarHeight = info.statusBarHeight
+				if (statusBarHeight > 0) this.safeTop = statusBarHeight
+				this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+		},
+		bottomSafeInset(safeAreaBottom: number, windowBottom: number): number {
+			const bottom = safeAreaBottom > windowBottom ? safeAreaBottom : windowBottom
+			return bottom > 0 ? bottom : 0
+		},
+		applyLayout(width: number, height: number) {
+			if (width > 0) this.windowWidth = width
+			if (height > 0) this.windowHeight = height
+		},
+		pageStyle(): string {
+			return 'height:' + this.pageContentHeight().toString() + 'px;padding-bottom:' + this.safeBottom.toString() + 'px;'
+		},
+		pageContentHeight(): number {
+			const height = this.windowHeight - this.safeBottom
+			return height > 320 ? height : 320
+		},
+		contentHeight(): number {
+			const height = this.pageContentHeight() - this.safeTop
+			return height > 320 ? height : this.pageContentHeight()
+		},
+		windowStyle(): string {
+			return 'height:' + this.pageContentHeight().toString() + 'px;padding-top:' + this.safeTop.toString() + 'px;'
+		},
+		mainSurfaceStyle(): string {
+			return 'height:' + this.contentHeight().toString() + 'px;'
+		},
+		bottomTabsHeight(): number {
+			return 62 + this.safeBottom
+		},
+		capabilityScrollStyle(): string {
+			const height = this.contentHeight() - this.bottomTabsHeight()
+			return 'height:' + (height > 180 ? height : 180).toString() + 'px;'
+		},
+		bottomTabsStyle(): string {
+			return 'bottom:' + (10 + this.safeBottom).toString() + 'px;padding-bottom:' + this.safeBottom.toString() + 'px;'
+		},
+		refreshCapabilityStatus() {
+			this.refreshStatus()
+			this.refreshBluetoothTest()
+			this.refreshAppLink()
+			this.refreshAutomationTest()
+			this.refreshOverlayScreen()
+			this.refreshNotificationListenerTest()
+			this.refreshDiagnostics()
+		},
+		syncAppLink(record: AppLinkRecord) {
+			this.lastLinkAction = record.action
+			this.lastLinkSource = record.source
+			this.lastLinkUri = record.uri
+			this.lastLinkMime = record.mimeType
+			this.lastLinkText = record.text
+			this.lastLinkAt = record.createdAt
+		},
+		lastLinkSummary(): string {
+			if (this.lastLinkAction.length == 0 && this.lastLinkSource.length == 0) return '暂无来源记录'
+			const meta = this.lastLinkMime.length > 0 ? ' · ' + this.lastLinkMime : ''
+			const time = this.lastLinkAt.length > 0 ? ' · ' + this.lastLinkAt : ''
+			return this.lastLinkAction + ' / ' + this.lastLinkSource + meta + time
+		},
+		refreshAppLink() {
+			this.syncAppLink(getAppLinkRecord())
+		},
+		onAppLinkEvent(record: AppLinkRecord) {
+			this.syncAppLink(record)
+		},
+		openUploadMenu() {
+			uni.showActionSheet({
+				itemList: ['拍照', '相册', '任意文件'],
+				success: (res) => {
+					if (res.tapIndex == 0) {
+						this.choosePhotoUpload(['camera'])
+						return
+					}
+					if (res.tapIndex == 1) {
+						this.choosePhotoUpload(['album'])
+						return
+					}
+					this.chooseAnyFileUpload()
+				},
+			})
+		},
+		choosePhotoUpload(sourceTypes: Array<string>) {
+			try {
+				uni.chooseImage({
+					count: 1,
+					sizeType: ['original'],
+					sourceType: sourceTypes,
+					success: (res) => {
+						const paths = res.tempFilePaths
+						if (paths.length == 0) return
+						this.uploadChosenLocalFile(paths[0], 'image/*', '照片已上传到对话链路')
+					},
+					fail: (err) => {
+						const message = this.errorText(err)
+						if (message.indexOf('cancel') >= 0) return
+						this.fileStatus = message
+					},
+				})
+			} catch (error) {
+				this.fileStatus = '当前基座缺少相册模块'
+			}
+		},
+		chooseAnyFileUpload() {
+			try {
+				uni.chooseFile({
+					count: 1,
+					type: 'all',
+					success: (res) => {
+						const files = res.tempFiles
+						if (files.length == 0) return
+						this.uploadChosenLocalFile(files[0].path, '*/*', '文件已上传到对话链路')
+					},
+					fail: (err) => {
+						const message = this.errorText(err)
+						if (message.indexOf('cancel') >= 0) return
+						this.fileStatus = message
+					},
+				})
+			} catch (error) {
+				this.fileStatus = '当前基座缺少文件选择模块'
+			}
+		},
+		uploadChosenLocalFile(filePath: string, mimeType: string, successText: string) {
+			if (filePath.length == 0) return
+			this.fileStatus = '正在上传 ' + filePath
+			uploadMobileFile(filePath, filePath, mimeType, (ok, record, error) => {
+				if (ok && record != null) {
+					this.fileStatus = successText + '：' + record.path
+				} else {
+					this.fileStatus = error
+				}
+			})
+		},
+		openBrowserTest() {
+			if (!openExternalUri('https://www.qq.com')) {
+				this.statusText = '打开浏览器失败'
+			}
+		},
+		openSelfDeeplink() {
+			if (!openExternalUri('vibego://open?from=capability')) {
+				this.statusText = '打开 deeplink 失败'
+			}
+		},
+		openSettingsTest() {
+			if (!openSystemSettings()) this.statusText = '打开系统设置失败'
+		},
+		currentAutomationEndpoint(): string {
+			const raw = this.automationEndpoint
+			if (typeof raw == 'string') {
+				const value = raw as string
+				if (value.length > 0) return value
+			}
+			return getAutomationEndpoint()
+		},
+		errorText(error: any): string {
+			try {
+				const text = JSON.stringify(error)
+				if (text != null && text.length > 0 && text != '{}') return text
+			} catch (_) {}
+			try {
+				return error.toString()
+			} catch (_) {
+				return 'unknown error'
+			}
+		},
+		responseObject(data: any | null): UTSJSONObject | null {
+			if (data == null) return null
+			if (typeof data == 'string') {
+				const text = data as string
+				return JSON.parse(text) as UTSJSONObject
+			}
+			return data as UTSJSONObject
+		},
+		formatRunners(runners: Array<AutomationRunner>): string {
+			if (runners.length == 0) return '没有候选包'
+			const parts = new Array<string>()
+			for (let index: Int = 0; index < runners.length; index++) {
+				const item = runners[index]
+				parts.push(item.label + '=' + (item.installed ? 'installed' : 'missing'))
+			}
+			return parts.join(' · ')
+		},
+		refreshAutomationTest() {
+			const endpoint = this.currentAutomationEndpoint()
+			this.automationEndpoint = endpoint
+			setAutomationEndpoint(endpoint)
+			detectInstalledRunners((runners) => {
+				this.automationRunnersText = this.formatRunners(runners)
+			})
+		},
+		sendAutomationPing() {
+			const endpoint = this.currentAutomationEndpoint()
+			this.automationEndpoint = endpoint
+			setAutomationEndpoint(endpoint)
+			const callbackUrl = apiUrl('/api/mobile/automation/results')
+			this.automationTaskText = '正在发送 ping 到 ' + endpoint
+			sendAutomationTask(endpoint, 'ping', '{}', callbackUrl, (result) => {
+				this.automationTaskText = result.message + ' ' + result.response
+				uni.showToast({ title: result.ok ? 'AutoJS 已响应' : 'AutoJS 不可用', icon: result.ok ? 'success' : 'none' })
+			})
+		},
+		openAutomationAccessibility() {
+			if (!openAccessibilitySettings()) this.statusText = '打开无障碍设置失败'
+		},
+		openFirstAutomationApp() {
+			detectInstalledRunners((runners) => {
+				for (let index: Int = 0; index < runners.length; index++) {
+					const item = runners[index]
+					if (item.installed) {
+						if (!openAutomationRunner(item.packageName)) this.statusText = '拉起 ' + item.label + ' 失败'
+						return
+					}
+				}
+				this.statusText = '没有检测到 AutoJS/AutoX.js 候选 APP'
+			})
+		},
+		refreshOverlayScreen() {
+			getScreenCapability((result) => {
+				this.applyScreenCapability(result)
+			})
+		},
+		applyScreenCapability(result: ScreenCapability) {
+			this.overlayGranted = result.overlayGranted
+			this.projectionAuthorized = result.projectionAuthorized
+			this.projectionActive = result.projectionActive
+			this.screenText = result.message
+			this.screenFrameError = result.lastError
+		},
+		openOverlaySettingsTest() {
+			if (!openOverlaySettings()) this.statusText = '打开悬浮窗设置失败'
+		},
+		requestScreenCaptureTest() {
+			requestCapturePermission((result) => {
+				this.applyScreenCapability(result)
+			})
+		},
+		captureOnceTest() {
+			captureOnce((result: ScreenCaptureFrameResult) => {
+				this.applyScreenCapability(result.capability)
+				if (result.ok) {
+					this.screenFramePath = result.path
+					this.screenFrameMeta = result.width.toString() + ' x ' + result.height.toString() + ' · ' + result.timestamp
+					this.screenFrameError = ''
+				} else {
+					this.screenFrameError = result.error
+				}
+			})
+		},
+		stopScreenCaptureTest() {
+			stopCaptureSession((result) => {
+				this.applyScreenCapability(result)
+			})
+		},
+		applyFileOutputResult(result: FileOutputResult) {
+			if (result.path.length > 0) this.fileOutputPath = result.path
+			this.fileOutputText = result.message + (result.path.length > 0 ? '：' + result.path : '')
+		},
+		createFileOutputTest() {
+			createTestOutputFile((result) => {
+				this.applyFileOutputResult(result)
+			})
+		},
+		ensureFileOutputPath(done: (path: string) => void): void {
+			if (this.fileOutputPath.length > 0) {
+				done(this.fileOutputPath)
+				return
+			}
+			createTestOutputFile((result) => {
+				this.applyFileOutputResult(result)
+				done(result.path)
+			})
+		},
+		shareTestFile() {
+			this.ensureFileOutputPath((path) => {
+				if (path.length == 0 || !shareFile(path)) {
+					this.fileOutputText = '系统分享失败，请确认文件存在且 FileProvider 已进自定义基座'
+				} else {
+					this.fileOutputText = '已打开系统分享面板：' + path
+				}
+			})
+		},
+		openTestFile() {
+			this.ensureFileOutputPath((path) => {
+				if (path.length == 0 || !openFile(path)) {
+					this.fileOutputText = '打开方式失败，请确认系统有可处理该类型的 APP'
+				} else {
+					this.fileOutputText = '已请求系统打开：' + path
+				}
+			})
+		},
+		saveDownloadsTest() {
+			saveTextToDownloads('vibego-output-test.txt', 'VibeGo Downloads output test\n' + new Date().toISOString() + '\n', (result) => {
+				this.applyFileOutputResult(result)
+			})
+		},
+		requestLocationTest() {
+			uni.getLocation({
+				type: 'gcj02',
+				success: (res) => {
+					this.currentLatitude = res.latitude
+					this.currentLongitude = res.longitude
+					this.locationText = res.latitude.toString() + ', ' + res.longitude.toString()
+				},
+				fail: (err) => {
+					this.locationText = this.errorText(err)
+				},
+			})
+		},
+		chooseLocationTest() {
+			uni.chooseLocation({
+				success: (res) => {
+					this.pickedLocationText = (res.name ?? '') + ' ' + (res.address ?? '') + ' ' + res.latitude.toString() + ', ' + res.longitude.toString()
+				},
+				fail: (err) => {
+					this.pickedLocationText = this.errorText(err)
+				},
+			})
+		},
+		openCurrentLocation() {
+			if (this.currentLatitude == 0 && this.currentLongitude == 0) {
+				this.statusText = '请先获取当前位置'
+				return
+			}
+			if (openGeoLocation(this.currentLatitude, this.currentLongitude, 'VibeGo 当前位置')) {
+				this.statusText = '已请求打开地图'
+			} else {
+				this.statusText = '打开地图失败'
+			}
+		},
+		openLocationSettingsTest() {
+			if (!openLocationSettings()) this.statusText = '打开定位设置失败'
+		},
+		syncBluetooth(result: BluetoothCapability) {
+			this.bluetoothText = result.message + ' | supported=' + result.supported.toString() + ' enabled=' + result.enabled.toString() + ' permissions=' + result.permissionsGranted.toString()
+		},
+		refreshBluetoothTest() {
+			getBluetoothCapability((result) => {
+				this.syncBluetooth(result)
+			})
+		},
+		requestBluetoothTest() {
+			requestBluetoothCapability((result) => {
+				this.syncBluetooth(result)
+			})
+		},
+		openBluetoothSettingsTest() {
+			if (!openBluetoothSettings()) this.statusText = '打开蓝牙设置失败'
+		},
+		scanCodeTest() {
+			uni.scanCode({
+				onlyFromCamera: false,
+				success: (res) => {
+					this.scanText = (res.scanType ?? '') + ' ' + (res.result ?? '')
+				},
+				fail: (err) => {
+					this.scanText = this.errorText(err)
+				},
+			})
+		},
+		chooseContactTest() {
+			chooseSystemContact((ok, contact, error) => {
+				if (ok && contact != null) {
+					this.contactText = contact.name + ' ' + contact.phone
+				} else {
+					this.contactText = error
+				}
+			})
+		},
+		refreshNotificationListenerTest() {
+			getNotificationListenerState((state) => {
+				this.notificationListenerEnabled = state.enabled
+				this.notificationListenerText = state.message
+				this.notificationEvents = state.events
+			})
+		},
+		openNotificationListenerSettingsTest() {
+			if (!openNotificationListenerSettings()) this.statusText = '打开通知使用权设置失败'
+		},
+		localNotificationSummary(): string {
+			if (this.localNotificationAt.length == 0) return '暂无本地通知记录'
+			let line = this.localNotificationAt
+			if (this.localNotificationLastTitle.length > 0) {
+				line = line + ' · ' + this.localNotificationLastTitle
+			}
+			if (this.localNotificationLastText.length > 0) {
+				line = line + ' · ' + this.localNotificationLastText
+			}
+			return line
+		},
+		currentLocalNotificationTitle(): string {
+			const raw = this.localNotificationTitle
+			if (typeof raw == 'string') {
+				const value = raw as string
+				if (value.length > 0) return value
+			}
+			return 'VibeGo'
+		},
+		currentLocalNotificationText(): string {
+			const raw = this.localNotificationText
+			if (typeof raw == 'string') {
+				const value = raw as string
+				if (value.length > 0) return value
+			}
+			return '你有一条新的本地消息'
+		},
+		sendLocalNotificationNow() {
+			const title = this.currentLocalNotificationTitle()
+			const text = this.currentLocalNotificationText()
+			showLocalNotification(title, text, (result) => {
+				this.localNotificationStatus = result.message
+				this.applyAction(result)
+			})
+		},
+		scheduleLocalNotificationTest() {
+			const title = this.currentLocalNotificationTitle()
+			const text = this.currentLocalNotificationText()
+			scheduleLocalNotification(10, title, text, (result) => {
+				this.localNotificationStatus = result.message
+				this.applyAction(result)
+			})
+		},
+		cancelLocalNotificationTest() {
+			cancelLocalNotification((result) => {
+				this.localNotificationStatus = result.message
+				this.applyAction(result)
+			})
+		},
+		refreshDiagnostics() {
+			const info = uni.getSystemInfoSync()
+			const base = 'Android ' + info.osVersion + ' · model=' + info.model + ' · platform=' + info.platform + '\n' +
+				'server=' + getServerUrl() + '\n' +
+				'push=removed\n' +
+				'WebView=系统原生 WebView\n' +
+				'腾讯地图/定位 key=YOUR_TENCENT_* 占位，请替换真实 key\n' +
+				'AutoJS=' + this.automationRunnersText + '\n' +
+				'overlay=' + (this.overlayGranted ? 'granted' : 'missing') + ' · projection=' + (this.projectionAuthorized ? 'authorized' : 'missing') + ' · notificationListener=' + (this.notificationListenerEnabled ? 'enabled' : 'missing')
+			this.diagnosticsText = base + '\nCDP=检测中...'
+			uni.request({
+				url: apiUrl('/api/codex/cdp/status'),
+				method: 'GET',
+				timeout: 5000,
+				success: (res) => {
+					try {
+						const data = this.responseObject(res.data)
+						if (data == null) {
+							this.diagnosticsText = base + '\nCDP=响应为空'
+							return
+						}
+						this.diagnosticsText = base + '\nCDP=' + (data.getBoolean('available') == true ? 'available' : 'unavailable') + ' · ' + (data.getString('pageTitle') ?? data.getString('error') ?? '')
+					} catch (_) {
+						this.diagnosticsText = base + '\nCDP=响应解析失败'
+					}
+				},
+				fail: (err) => {
+					this.diagnosticsText = base + '\nCDP=' + this.errorText(err)
+				},
+			})
+		},
+		applyStatus(status: ProbeStatus) {
+			this.notificationGranted = status.notificationGranted
+			this.exactAlarmGranted = status.exactAlarmGranted
+			this.heartbeatActive = status.heartbeatActive
+			this.playbackActive = status.playbackActive
+			this.lastHeartbeatAt = status.lastHeartbeatAt
+			this.lastHeartbeatStatus = status.lastHeartbeatStatus
+			this.lastAlarmAt = status.lastAlarmAt
+			this.localNotificationAt = status.lastLocalNotificationAt
+			this.localNotificationLastTitle = status.lastLocalNotificationTitle
+			this.localNotificationLastText = status.lastLocalNotificationText
+			this.logs = status.logs
+		},
+		applyAction(result: ProbeActionResult) {
+			this.statusText = result.message
+			this.applyStatus(result.status)
+			uni.showToast({ title: result.message, icon: result.ok ? 'success' : 'none' })
+		},
+		refreshStatus() {
+			getProbeStatus((status) => {
+				this.applyStatus(status)
+			})
+		},
+		requestPermissions() {
+			requestProbePermissions((result) => {
+				this.applyAction(result)
+			})
+		},
+		openAlarmSettings() {
+			openExactAlarmSettings()
+			this.statusText = '已打开精确闹钟设置'
+		},
+		startHeartbeatTest() {
+			this.serverUrl = getServerUrl()
+			startHeartbeat(10, this.serverUrl, (result) => {
+				this.applyAction(result)
+			})
+		},
+		stopHeartbeatTest() {
+			stopHeartbeat((result) => {
+				this.applyAction(result)
+			})
+		},
+		scheduleAlarmTest() {
+			scheduleAlarm(60, (result) => {
+				this.applyAction(result)
+			})
+		},
+		cancelAlarmTest() {
+			cancelAlarm((result) => {
+				this.applyAction(result)
+			})
+		},
+		stopPlaybackTest() {
+			stopPlayback((result) => {
+				this.applyAction(result)
+			})
+		},
+		clearRefreshTimer() {
+			if (this.refreshTimer != 0) {
+				clearInterval(this.refreshTimer)
+				this.refreshTimer = 0
+			}
+		},
+		goHome() {
+			uni.reLaunch({ url: '/pages/index/index' })
+		},
+		goFiles() {
+			uni.reLaunch({ url: '/pages/files/index' })
+		},
+		goTerminal() {
+			uni.reLaunch({ url: '/pages/terminal/index' })
+		},
+		goWeb() {
+			uni.reLaunch({ url: '/pages/web/index' })
+		},
+		startAnnotation() {
+			startAppAnnotation('pages/background-test/index', 'Android 能力中心')
+		},
+	},
+}
+</script>
+
+<style>
+	.app-page {
+		background-color: #f8fafc;
+	}
+
+	.window {
+		width: 100%;
+	}
+
+	.main-surface {
+		padding-left: 10px;
+		padding-right: 10px;
+		background-color: #f8fafc;
+	}
+
+	.capability-scroll {
+		width: 100%;
+	}
+
+	.topbar,
+	.panel,
+	.bottom-tabs {
+		border-width: 1px;
+		border-color: #e2e8f0;
+		border-style: solid;
+		background-color: #ffffff;
+	}
+
+	.topbar {
+		height: 56px;
+		padding: 8px 10px;
+		border-radius: 10px;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.brand-mark {
+		width: 34px;
+		height: 34px;
+		border-radius: 9px;
+		align-items: center;
+		justify-content: center;
+		background-color: #0f766e;
+	}
+
+	.brand-mark-text {
+		color: #ffffff;
+		font-size: 13px;
+		font-weight: 700;
+	}
+
+	.topbar-info {
+		margin-left: 10px;
+		flex: 1;
+	}
+
+	.topbar-title,
+	.panel-title,
+	.metric-label {
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.topbar-title {
+		font-size: 16px;
+	}
+
+	.topbar-subtitle,
+	.panel-meta,
+	.hint,
+	.path-text,
+	.log-text,
+	.value-text,
+	.metric-value {
+		color: #475569;
+	}
+
+	.topbar-subtitle,
+	.panel-meta,
+	.hint,
+	.path-text,
+	.log-text,
+	.value-text {
+		font-size: 12px;
+	}
+
+	.status-pill {
+		padding: 5px 9px;
+		border-radius: 999px;
+		background-color: #e2e8f0;
+	}
+
+	.status-pill.ok {
+		background-color: #dcfce7;
+	}
+
+	.status-pill.pending {
+		background-color: #e5e7eb;
+	}
+
+	.status-pill-text {
+		font-size: 12px;
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.panel {
+		margin-top: 10px;
+		padding: 12px;
+		border-radius: 12px;
+	}
+
+	.panel-header,
+	.metric-row,
+	.row,
+	.bottom-tabs {
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.panel-header {
+		margin-bottom: 8px;
+	}
+
+	.panel-title {
+		flex: 1;
+		font-size: 15px;
+	}
+
+	.panel-meta {
+		font-size: 11px;
+	}
+
+	.metric-row {
+		justify-content: space-between;
+		margin-top: 8px;
+	}
+
+	.metric-label {
+		font-size: 13px;
+	}
+
+	.metric-value,
+	.value-text,
+	.path-text,
+	.hint {
+		margin-top: 6px;
+		line-height: 18px;
+	}
+
+	.field {
+		margin-top: 6px;
+		height: 36px;
+		padding-left: 10px;
+		padding-right: 10px;
+		border-width: 1px;
+		border-color: #dbe2ea;
+		border-style: solid;
+		border-radius: 10px;
+		background-color: #f8fafc;
+		color: #0f172a;
+		font-size: 13px;
+	}
+
+	.row {
+		flex-wrap: wrap;
+		margin-top: 10px;
+	}
+
+	.button {
+		margin-right: 8px;
+		margin-top: 6px;
+		padding-left: 12px;
+		padding-right: 12px;
+		height: 36px;
+		border-radius: 10px;
+		border-width: 1px;
+		border-color: #dbe2ea;
+		background-color: #ffffff;
+		font-size: 13px;
+		color: #0f172a;
+	}
+
+	.button.accent {
+		background-color: #0f766e;
+		color: #ffffff;
+		border-color: #0f766e;
+	}
+
+	.ok-text {
+		color: #166534;
+	}
+
+	.fail-text {
+		color: #b91c1c;
+	}
+
+	.log-panel {
+		margin-bottom: 0;
+	}
+
+	.logs {
+		height: 180px;
+	}
+
+	.mini-logs {
+		margin-top: 8px;
+		height: 96px;
+		padding: 8px;
+		border-radius: 10px;
+		background-color: #f8fafc;
+	}
+
+	.log-text {
+		margin-top: 4px;
+		line-height: 17px;
+	}
+
+	.scroll-bottom-spacer {
+		height: 12px;
+	}
+
+	.bottom-tabs {
+		position: fixed;
+		left: 10px;
+		right: 10px;
+		bottom: 10px;
+		min-height: 52px;
+		padding-top: 4px;
+		border-radius: 14px;
+		justify-content: space-around;
+	}
+
+	.tab {
+		flex: 1;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.tab-text {
+		font-size: 13px;
+		font-weight: 700;
+		color: #334155;
+	}
+</style>

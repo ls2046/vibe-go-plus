@@ -1,0 +1,36 @@
+import { type ChatMessageView } from './index-types.uts'
+
+function twoDigits(value: number): string {
+	return value < 10 ? '0' + value.toString() : value.toString()
+}
+
+export function messageLabel(message: ChatMessageView): string {
+	if (message.label.length > 0) return message.label
+	return message.role == 'user' ? 'You' : 'Codex'
+}
+
+export function formatMessageTime(value: string): string {
+	const parsed = Date.parse(value)
+	if (parsed <= 0) return ''
+	const east8 = new Date(parsed + 8 * 60 * 60000)
+	return twoDigits(east8.getUTCHours()) + ':' + twoDigits(east8.getUTCMinutes())
+}
+
+export function messageBlockClass(kind: string): string {
+	if (kind == 'code') return 'message-block message-code-block'
+	if (kind == 'image') return 'message-block message-image-block'
+	if (kind == 'table') return 'message-block message-table-block'
+	if (kind == 'list') return 'message-block message-list-block'
+	if (kind == 'heading') return 'message-block message-heading-block'
+	if (kind == 'quote') return 'message-block message-quote-block'
+	if (kind == 'hr') return 'message-block message-hr-block'
+	return 'message-block message-paragraph-block'
+}
+
+export function messageBlockTextClass(kind: string): string {
+	if (kind == 'code') return 'message-code-text'
+	if (kind == 'list') return 'message-list-text'
+	if (kind == 'heading') return 'message-heading-text'
+	if (kind == 'quote') return 'message-quote-text'
+	return 'message-paragraph-text'
+}

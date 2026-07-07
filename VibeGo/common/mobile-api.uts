@@ -1,0 +1,1432 @@
+import { apiUrl, getServerUrl, saveAnnotationRecord, saveUploadRecord, type AnnotationRecord, type UploadRecord } from './app-state.uts'
+
+export type HealthResult = {
+	ok: boolean
+	error: string
+}
+
+export type FsEntry = {
+	name: string
+	type: string
+	size: number
+	mtimeMs: number
+}
+
+export type FileReadResult = {
+	path: string
+	text: string
+	size: number
+	mtimeMs: number
+}
+
+export type ProjectInfo = {
+	id: string
+	name: string
+	path: string
+}
+
+export type CodexThread = {
+	id: string
+	title: string
+	name: string
+	cwd: string
+	projectId: string
+	projectName: string
+	updatedAt: string
+	lastMessageAt: string
+	preview: string
+	previewRole: string
+	messageCount: number
+	sessionFile: string
+	runtimeStatus: string
+	runtimeActive: boolean
+}
+
+export type ChatMessage = {
+	id: string
+	role: string
+	label: string
+	text: string
+	timestamp: string
+}
+
+export type CodexProcessEvent = {
+	id: string
+	kind: string
+	type: string
+	text: string
+	time: string
+	step: string
+	callId: string
+	name: string
+	status: string
+}
+
+export type CodexCursor = {
+	threadId: string
+	sessionFile: string
+	messageCount: number
+	processCount: number
+	fileSize: number
+	byteOffset: number
+	updatedAt: string
+	openTurnStartedAt: string
+	openTurnHasAssistantFinal: boolean
+}
+
+export type CodexThreadSnapshot = {
+	ok: boolean
+	available: boolean
+	threadId: string
+	sessionFile: string
+	summary: CodexThread
+	messages: Array<ChatMessage>
+	processEvents: Array<CodexProcessEvent>
+	cursor: CodexCursor
+	active: boolean
+	status: string
+	error: string
+}
+
+export type CodexThreadDelta = {
+	ok: boolean
+	available: boolean
+	reset: boolean
+	threadId: string
+	sessionFile: string
+	summary: CodexThread
+	messagesDelta: Array<ChatMessage>
+	processEventsDelta: Array<CodexProcessEvent>
+	cursor: CodexCursor
+	active: boolean
+	status: string
+	error: string
+}
+
+export type CodexStatus = {
+	ok: boolean
+	available: boolean
+	accepted: boolean
+	active: boolean
+	status: string
+	threadId: string
+	sessionFile: string
+	preview: string
+	final: string
+	error: string
+	events: Array<CodexEvent>
+}
+
+export type CodexWatch = {
+	sendId: string
+	since: string
+	threadId: string
+	sessionFile: string
+	expectNewThread: boolean
+	excludeThreadId: string
+	cwd: string
+}
+
+export type CodexEvent = {
+	kind: string
+	type: string
+	text: string
+	time: string
+	step: string
+}
+
+export type CodexSendResult = {
+	ok: boolean
+	sendId: string
+	accepted: boolean
+	threadId: string
+	sessionFile: string
+	sentAt: string
+	watch: CodexWatch
+	events: Array<CodexEvent>
+	error: string
+}
+
+export type CodexCreateThreadResult = {
+	ok: boolean
+	scope: string
+	projectId: string
+	projectName: string
+	cwd: string
+	preparedNewThreadId: string
+	preparedAt: string
+	threadId: string
+	sessionFile: string
+	error: string
+}
+
+function responseJson(data: any | null): UTSJSONObject | null {
+	if (data == null) {
+		return null
+	}
+	if (typeof data == 'string') {
+		return JSON.parse(data) as UTSJSONObject
+	}
+	return data as UTSJSONObject
+}
+
+function emptyWatch(): CodexWatch {
+	return {
+		sendId: '',
+		since: '',
+		threadId: '',
+		sessionFile: '',
+		expectNewThread: false,
+		excludeThreadId: '',
+		cwd: '',
+	}
+}
+
+function emptyThreadSummary(): CodexThread {
+	return {
+		id: '',
+		title: '',
+		name: '',
+		cwd: '',
+		projectId: '',
+		projectName: '',
+		updatedAt: '',
+		lastMessageAt: '',
+		preview: '',
+		previewRole: '',
+		messageCount: 0,
+		sessionFile: '',
+		runtimeStatus: '',
+		runtimeActive: false,
+	}
+}
+
+function emptyCursor(): CodexCursor {
+	return {
+		threadId: '',
+		sessionFile: '',
+		messageCount: 0,
+		processCount: 0,
+		fileSize: 0,
+		byteOffset: 0,
+		updatedAt: '',
+		openTurnStartedAt: '',
+		openTurnHasAssistantFinal: false,
+	}
+}
+
+function emptySendResult(error: string): CodexSendResult {
+	return {
+		ok: false,
+		sendId: '',
+		accepted: false,
+		threadId: '',
+		sessionFile: '',
+		sentAt: '',
+		watch: emptyWatch(),
+		events: new Array<CodexEvent>(),
+		error,
+	}
+}
+
+function emptyCreateThreadResult(error: string): CodexCreateThreadResult {
+	return {
+		ok: false,
+		scope: '',
+		projectId: '',
+		projectName: '',
+		cwd: '',
+		preparedNewThreadId: '',
+		preparedAt: '',
+		threadId: '',
+		sessionFile: '',
+		error,
+	}
+}
+
+function codexSendErrorMessage(code: string, raw: string): string {
+	if (code == 'CODEX_THREAD_PROJECT_MISMATCH') return '当前会话所属项目和发送目标不一致，已拦截以避免发到错误目录'
+	if (code == 'CODEX_THREAD_ROW_NOT_FOUND') return '已自动展开并滚动查找 Codex 侧边栏，但仍未找到目标线程'
+	if (code == 'CODEX_BUSY_TIMEOUT') return 'Codex 当前任务长时间未结束，本次发送已取消'
+	if (code == 'CODEX_THREAD_SELECTION_AMBIGUOUS') return 'Codex 侧边栏里有多个同名目标线程，已停止发送以避免发错会话'
+	if (raw.length > 0) return raw
+	return '发送失败'
+}
+
+function parseCodexThread(item: UTSJSONObject): CodexThread {
+	return {
+		id: item.getString('id') ?? '',
+		title: item.getString('title') ?? (item.getString('name') ?? ''),
+		name: item.getString('name') ?? (item.getString('title') ?? ''),
+		cwd: item.getString('cwd') ?? '',
+		projectId: item.getString('projectId') ?? '',
+		projectName: item.getString('projectName') ?? '',
+		updatedAt: item.getString('updatedAt') ?? '',
+		lastMessageAt: item.getString('lastMessageAt') ?? '',
+		preview: item.getString('preview') ?? '',
+		previewRole: item.getString('previewRole') ?? '',
+		messageCount: item.getNumber('messageCount') ?? 0,
+		sessionFile: item.getString('sessionFile') ?? '',
+		runtimeStatus: item.getString('runtimeStatus') ?? '',
+		runtimeActive: item.getBoolean('runtimeActive') == true,
+	}
+}
+
+function parseChatMessage(item: UTSJSONObject): ChatMessage {
+	return {
+		id: item.getString('id') ?? '',
+		role: item.getString('role') ?? '',
+		label: item.getString('label') ?? '',
+		text: item.getString('text') ?? '',
+		timestamp: item.getString('timestamp') ?? '',
+	}
+}
+
+function parseCodexProcessEvent(item: UTSJSONObject): CodexProcessEvent {
+	return {
+		id: item.getString('id') ?? '',
+		kind: item.getString('kind') ?? '',
+		type: item.getString('type') ?? '',
+		text: item.getString('text') ?? '',
+		time: item.getString('time') ?? '',
+		step: item.getString('step') ?? '',
+		callId: item.getString('callId') ?? '',
+		name: item.getString('name') ?? '',
+		status: item.getString('status') ?? '',
+	}
+}
+
+function parseCodexCursor(data: UTSJSONObject | null): CodexCursor {
+	if (data == null) return emptyCursor()
+	return {
+		threadId: data.getString('threadId') ?? '',
+		sessionFile: data.getString('sessionFile') ?? '',
+		messageCount: data.getNumber('messageCount') ?? 0,
+		processCount: data.getNumber('processCount') ?? 0,
+		fileSize: data.getNumber('fileSize') ?? 0,
+		byteOffset: data.getNumber('byteOffset') ?? 0,
+		updatedAt: data.getString('updatedAt') ?? '',
+		openTurnStartedAt: data.getString('openTurnStartedAt') ?? '',
+		openTurnHasAssistantFinal: data.getBoolean('openTurnHasAssistantFinal') == true,
+	}
+}
+
+function parseCodexEvent(item: UTSJSONObject): CodexEvent {
+	return {
+		kind: item.getString('kind') ?? '',
+		type: item.getString('type') ?? '',
+		text: item.getString('text') ?? '',
+		time: item.getString('time') ?? '',
+		step: item.getString('step') ?? '',
+	}
+}
+
+function parseCodexEvents(data: UTSJSONObject): Array<CodexEvent> {
+	const rawEvents = data.getArray('events') ?? new Array<any>()
+	const events = new Array<CodexEvent>()
+	for (let index: Int = 0; index < rawEvents.length; index++) {
+		events.push(parseCodexEvent(rawEvents[index] as UTSJSONObject))
+	}
+	return events
+}
+
+function parseChatMessages(data: UTSJSONObject, field: string): Array<ChatMessage> {
+	const rawMessages = data.getArray(field) ?? new Array<any>()
+	const messages = new Array<ChatMessage>()
+	for (let index: Int = 0; index < rawMessages.length; index++) {
+		messages.push(parseChatMessage(rawMessages[index] as UTSJSONObject))
+	}
+	return messages
+}
+
+function parseProcessEvents(data: UTSJSONObject, field: string): Array<CodexProcessEvent> {
+	const rawEvents = data.getArray(field) ?? new Array<any>()
+	const events = new Array<CodexProcessEvent>()
+	for (let index: Int = 0; index < rawEvents.length; index++) {
+		events.push(parseCodexProcessEvent(rawEvents[index] as UTSJSONObject))
+	}
+	return events
+}
+
+function parseCodexWatch(data: UTSJSONObject | null): CodexWatch {
+	if (data == null) return emptyWatch()
+	return {
+		sendId: data.getString('sendId') ?? '',
+		since: data.getString('since') ?? '',
+		threadId: data.getString('threadId') ?? '',
+		sessionFile: data.getString('sessionFile') ?? '',
+		expectNewThread: data.getBoolean('expectNewThread') == true,
+		excludeThreadId: data.getString('excludeThreadId') ?? '',
+		cwd: data.getString('cwd') ?? '',
+	}
+}
+
+export function checkServerHealth(done: (result: HealthResult) => void): void {
+	const url = apiUrl('/healthz')
+	if (url.length == 0) {
+		done({ ok: false, error: '请先填写 vibe-go server 地址' })
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 5000,
+		success: (res) => {
+			if (res.statusCode >= 200 && res.statusCode < 300) {
+				done({ ok: true, error: '' })
+			} else {
+				done({ ok: false, error: 'HTTP ' + res.statusCode.toString() })
+			}
+		},
+		fail: (err) => {
+			done({ ok: false, error: err.errMsg })
+		},
+	})
+}
+
+export function apiRootsMobile(done: (ok: boolean, roots: Array<string>, error: string) => void): void {
+	const url = apiUrl('/api/roots')
+	if (url.length == 0) {
+		done(false, new Array<string>(), '请先填写 vibe-go server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 8000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, new Array<string>(), 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, new Array<string>(), data == null ? '响应解析失败' : (data.getString('error') ?? '读取 roots 失败'))
+					return
+				}
+				const rawRoots = data.getArray('roots') ?? new Array<any>()
+				const roots = new Array<string>()
+				for (let index: Int = 0; index < rawRoots.length; index++) {
+					const value = rawRoots[index] as string
+					if (value.length > 0) {
+						roots.push(value)
+					}
+				}
+				done(true, roots, '')
+			} catch (error) {
+				console.log('apiRootsMobile parse failed', error)
+				done(false, new Array<string>(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, new Array<string>(), err.errMsg)
+		},
+	})
+}
+
+export function apiProjects(done: (ok: boolean, projects: Array<ProjectInfo>, error: string) => void): void {
+	apiProjectsWithSync(false, done)
+}
+
+export function apiProjectsWithSync(syncCodex: boolean, done: (ok: boolean, projects: Array<ProjectInfo>, error: string) => void): void {
+	let path = '/api/projects'
+	if (syncCodex) path = path + '?sync=cdp'
+	const url = apiUrl(path)
+	if (url.length == 0) {
+		done(false, new Array<ProjectInfo>(), '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: syncCodex ? 20000 : 8000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, new Array<ProjectInfo>(), 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, new Array<ProjectInfo>(), data == null ? '响应解析失败' : (data.getString('error') ?? '读取项目失败'))
+					return
+				}
+				const rawProjects = data.getArray('projects') ?? new Array<any>()
+				const projects = new Array<ProjectInfo>()
+				for (let index: Int = 0; index < rawProjects.length; index++) {
+					const item = rawProjects[index] as UTSJSONObject
+					projects.push({
+						id: item.getString('id') ?? '',
+						name: item.getString('name') ?? '',
+						path: item.getString('path') ?? '',
+					})
+				}
+				done(true, projects, '')
+			} catch (error) {
+				console.log('apiProjects parse failed', error)
+				done(false, new Array<ProjectInfo>(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, new Array<ProjectInfo>(), err.errMsg)
+		},
+	})
+}
+
+export function apiCodexThreads(projectId: string, done: (ok: boolean, threads: Array<CodexThread>, error: string) => void): void {
+	apiCodexThreadsWithSync(projectId, false, done)
+}
+
+export function apiCodexThreadsWithSync(projectId: string, syncCodex: boolean, done: (ok: boolean, threads: Array<CodexThread>, error: string) => void): void {
+	let path = '/api/codex/threads?projectId=' + encodeURIComponent(projectId) + '&limit=1000'
+	if (syncCodex) path = path + '&sync=cdp'
+	const url = apiUrl(path)
+	if (url.length == 0) {
+		done(false, new Array<CodexThread>(), '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: syncCodex ? 20000 : 10000,
+			success: (res) => {
+				if (res.statusCode < 200 || res.statusCode >= 300) {
+					done(false, new Array<CodexThread>(), 'HTTP ' + res.statusCode.toString())
+					return
+				}
+				let parsedOk = false
+				let parsedThreads = new Array<CodexThread>()
+				let parsedError = ''
+				try {
+					const data = responseJson(res.data)
+					if (data == null || data.getBoolean('ok') != true) {
+						parsedError = data == null ? '响应解析失败' : (data.getString('error') ?? '读取线程失败')
+					} else {
+						const rawThreads = data.getArray('threads') ?? new Array<any>()
+						for (let index: Int = 0; index < rawThreads.length; index++) {
+							parsedThreads.push(parseCodexThread(rawThreads[index] as UTSJSONObject))
+						}
+						parsedOk = true
+					}
+				} catch (error) {
+					console.log('apiCodexThreads parse failed', error)
+					parsedError = '响应解析失败'
+				}
+				if (parsedOk) done(true, parsedThreads, '')
+				else done(false, new Array<CodexThread>(), parsedError.length > 0 ? parsedError : '响应解析失败')
+			},
+		fail: (err) => {
+			done(false, new Array<CodexThread>(), err.errMsg)
+		},
+	})
+}
+
+export function apiCodexHistory(threadId: string, done: (ok: boolean, messages: Array<ChatMessage>, error: string) => void): void {
+	const url = apiUrl('/api/codex/history?threadId=' + encodeURIComponent(threadId))
+	if (url.length == 0 || threadId.length == 0) {
+		done(false, new Array<ChatMessage>(), threadId.length == 0 ? '请选择线程' : '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, new Array<ChatMessage>(), 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, new Array<ChatMessage>(), data == null ? '响应解析失败' : (data.getString('error') ?? '读取聊天失败'))
+					return
+				}
+				done(true, parseChatMessages(data, 'messages'), '')
+			} catch (error) {
+				console.log('apiCodexHistory parse failed', error)
+				done(false, new Array<ChatMessage>(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, new Array<ChatMessage>(), err.errMsg)
+		},
+	})
+}
+
+export function apiCodexThreadSnapshot(threadId: string, done: (ok: boolean, snapshot: CodexThreadSnapshot, error: string) => void): void {
+	apiCodexThreadSnapshotWithProcessLimit(threadId, -1, done)
+}
+
+export function apiCodexThreadSnapshotWithProcessLimit(threadId: string, processLimit: number, done: (ok: boolean, snapshot: CodexThreadSnapshot, error: string) => void): void {
+	let path = '/api/codex/thread/snapshot?threadId=' + encodeURIComponent(threadId)
+	if (processLimit >= 0) path = path + '&processLimit=' + processLimit.toString()
+	const url = apiUrl(path)
+	if (url.length == 0 || threadId.length == 0) {
+		done(false, {
+			ok: false,
+			available: false,
+			threadId,
+			sessionFile: '',
+			summary: emptyThreadSummary(),
+			messages: new Array<ChatMessage>(),
+			processEvents: new Array<CodexProcessEvent>(),
+			cursor: emptyCursor(),
+			active: false,
+			status: 'missing',
+			error: threadId.length == 0 ? '请选择线程' : '请先填写 VibeGo server 地址',
+		}, threadId.length == 0 ? '请选择线程' : '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 12000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, {
+					ok: false,
+					available: false,
+					threadId,
+					sessionFile: '',
+					summary: emptyThreadSummary(),
+					messages: new Array<ChatMessage>(),
+					processEvents: new Array<CodexProcessEvent>(),
+					cursor: emptyCursor(),
+					active: false,
+					status: 'offline',
+					error: 'HTTP ' + res.statusCode.toString(),
+				}, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					const message = data == null ? '响应解析失败' : (data.getString('error') ?? '读取线程失败')
+					done(false, {
+						ok: false,
+						available: false,
+						threadId,
+						sessionFile: '',
+						summary: emptyThreadSummary(),
+						messages: new Array<ChatMessage>(),
+						processEvents: new Array<CodexProcessEvent>(),
+						cursor: emptyCursor(),
+						active: false,
+						status: 'parse-failed',
+						error: message,
+					}, message)
+					return
+				}
+				const summaryData = (data.getJSON('summary') ?? data.getJSON('threadSummary')) as UTSJSONObject | null
+				const snapshot: CodexThreadSnapshot = {
+					ok: true,
+					available: data.getBoolean('available') == true,
+					threadId: data.getString('threadId') ?? threadId,
+					sessionFile: data.getString('sessionFile') ?? '',
+					summary: summaryData == null ? emptyThreadSummary() : parseCodexThread(summaryData),
+					messages: parseChatMessages(data, 'messages'),
+					processEvents: parseProcessEvents(data, 'processEvents'),
+					cursor: parseCodexCursor(data.getJSON('cursor')),
+					active: data.getBoolean('active') == true,
+					status: data.getString('status') ?? '',
+					error: data.getString('error') ?? '',
+				}
+				done(true, snapshot, '')
+			} catch (error) {
+				console.log('apiCodexThreadSnapshot parse failed', error)
+				done(false, {
+					ok: false,
+					available: false,
+					threadId,
+					sessionFile: '',
+					summary: emptyThreadSummary(),
+					messages: new Array<ChatMessage>(),
+					processEvents: new Array<CodexProcessEvent>(),
+					cursor: emptyCursor(),
+					active: false,
+					status: 'parse-failed',
+					error: '响应解析失败',
+				}, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, {
+				ok: false,
+				available: false,
+				threadId,
+				sessionFile: '',
+				summary: emptyThreadSummary(),
+				messages: new Array<ChatMessage>(),
+				processEvents: new Array<CodexProcessEvent>(),
+				cursor: emptyCursor(),
+				active: false,
+				status: 'offline',
+				error: err.errMsg,
+			}, err.errMsg)
+		},
+	})
+}
+
+export function apiCodexThreadUpdates(threadId: string, cursor: CodexCursor, done: (ok: boolean, delta: CodexThreadDelta, error: string) => void): void {
+	let url = apiUrl('/api/codex/thread/updates?threadId=' + encodeURIComponent(threadId))
+	if (threadId.length == 0 || url.length == 0) {
+		done(false, {
+			ok: false,
+			available: false,
+			reset: false,
+			threadId,
+			sessionFile: '',
+			summary: emptyThreadSummary(),
+			messagesDelta: new Array<ChatMessage>(),
+			processEventsDelta: new Array<CodexProcessEvent>(),
+			cursor: emptyCursor(),
+			active: false,
+			status: 'missing',
+			error: threadId.length == 0 ? '请选择线程' : '请先填写 VibeGo server 地址',
+		}, threadId.length == 0 ? '请选择线程' : '请先填写 VibeGo server 地址')
+		return
+	}
+	if (cursor.sessionFile.length > 0) url = url + '&session=' + encodeURIComponent(cursor.sessionFile)
+	url = url + '&messageCount=' + cursor.messageCount.toString()
+	url = url + '&processCount=' + cursor.processCount.toString()
+	url = url + '&fileSize=' + cursor.fileSize.toString()
+	url = url + '&byteOffset=' + cursor.byteOffset.toString()
+	if (cursor.openTurnStartedAt.length > 0) url = url + '&openTurnStartedAt=' + encodeURIComponent(cursor.openTurnStartedAt)
+	if (cursor.openTurnHasAssistantFinal) url = url + '&openTurnHasAssistantFinal=true'
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, {
+					ok: false,
+					available: false,
+					reset: false,
+					threadId,
+					sessionFile: cursor.sessionFile,
+					summary: emptyThreadSummary(),
+					messagesDelta: new Array<ChatMessage>(),
+					processEventsDelta: new Array<CodexProcessEvent>(),
+					cursor: emptyCursor(),
+					active: false,
+					status: 'offline',
+					error: 'HTTP ' + res.statusCode.toString(),
+				}, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					const message = data == null ? '响应解析失败' : (data.getString('error') ?? '读取线程增量失败')
+					done(false, {
+						ok: false,
+						available: false,
+						reset: false,
+						threadId,
+						sessionFile: cursor.sessionFile,
+						summary: emptyThreadSummary(),
+						messagesDelta: new Array<ChatMessage>(),
+						processEventsDelta: new Array<CodexProcessEvent>(),
+						cursor: emptyCursor(),
+						active: false,
+						status: 'parse-failed',
+						error: message,
+					}, message)
+					return
+				}
+				const summaryData = (data.getJSON('summary') ?? data.getJSON('threadSummary')) as UTSJSONObject | null
+				const delta: CodexThreadDelta = {
+					ok: true,
+					available: data.getBoolean('available') == true,
+					reset: data.getBoolean('reset') == true,
+					threadId: data.getString('threadId') ?? threadId,
+					sessionFile: data.getString('sessionFile') ?? cursor.sessionFile,
+					summary: summaryData == null ? emptyThreadSummary() : parseCodexThread(summaryData),
+					messagesDelta: parseChatMessages(data, 'messagesDelta'),
+					processEventsDelta: parseProcessEvents(data, 'processEventsDelta'),
+					cursor: parseCodexCursor(data.getJSON('cursor')),
+					active: data.getBoolean('active') == true,
+					status: data.getString('status') ?? '',
+					error: data.getString('error') ?? '',
+				}
+				done(true, delta, '')
+			} catch (error) {
+				console.log('apiCodexThreadUpdates parse failed', error)
+				done(false, {
+					ok: false,
+					available: false,
+					reset: false,
+					threadId,
+					sessionFile: cursor.sessionFile,
+					summary: emptyThreadSummary(),
+					messagesDelta: new Array<ChatMessage>(),
+					processEventsDelta: new Array<CodexProcessEvent>(),
+					cursor: emptyCursor(),
+					active: false,
+					status: 'parse-failed',
+					error: '响应解析失败',
+				}, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, {
+				ok: false,
+				available: false,
+				reset: false,
+				threadId,
+				sessionFile: cursor.sessionFile,
+				summary: emptyThreadSummary(),
+				messagesDelta: new Array<ChatMessage>(),
+				processEventsDelta: new Array<CodexProcessEvent>(),
+				cursor: emptyCursor(),
+				active: false,
+				status: 'offline',
+				error: err.errMsg,
+			}, err.errMsg)
+		},
+	})
+}
+
+export function apiCodexThreadScope(threadId: string, scope: string, projectId: string, done: (ok: boolean, summary: CodexThread, error: string) => void): void {
+	const url = apiUrl('/api/codex/thread/scope')
+	if (url.length == 0) {
+		done(false, emptyThreadSummary(), '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'content-type': 'application/json',
+		},
+		data: {
+			threadId,
+			scope,
+			projectId,
+		},
+		timeout: 30000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				let message = 'HTTP ' + res.statusCode.toString()
+				try {
+					const errorData = responseJson(res.data)
+					if (errorData != null) message = message + ' ' + (errorData.getString('error') ?? '')
+				} catch (_) {}
+				done(false, emptyThreadSummary(), message)
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					const message = data == null ? '响应解析失败' : (data.getString('error') ?? '设置线程归属失败')
+					done(false, emptyThreadSummary(), message)
+					return
+				}
+				const summaryData = data.getJSON('summary') as UTSJSONObject | null
+				done(true, summaryData == null ? emptyThreadSummary() : parseCodexThread(summaryData), '')
+			} catch (_) {
+				done(false, emptyThreadSummary(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, emptyThreadSummary(), err.errMsg)
+		},
+	})
+}
+
+export function apiCodexCreateThread(scope: string, projectId: string, clientRequestId: string, done: (ok: boolean, result: CodexCreateThreadResult, error: string) => void): void {
+	const url = apiUrl('/api/codex/thread/new')
+	if (url.length == 0) {
+		done(false, emptyCreateThreadResult('请先填写 VibeGo server 地址'), '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'content-type': 'application/json',
+		},
+		data: {
+			scope,
+			projectId,
+			clientRequestId,
+		},
+		timeout: 30000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				let message = 'HTTP ' + res.statusCode.toString()
+				try {
+					const errorData = responseJson(res.data)
+					if (errorData != null) message = message + ' ' + (errorData.getString('error') ?? '')
+				} catch (_) {}
+				done(false, emptyCreateThreadResult(message), message)
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					const message = data == null ? '响应解析失败' : (data.getString('error') ?? '创建会话失败')
+					const result = emptyCreateThreadResult(message)
+					if (data != null) {
+						result.scope = data.getString('scope') ?? ''
+						result.projectId = data.getString('projectId') ?? ''
+						result.projectName = data.getString('projectName') ?? ''
+					}
+					done(false, result, message)
+					return
+				}
+				const result: CodexCreateThreadResult = {
+					ok: true,
+					scope: data.getString('scope') ?? '',
+					projectId: data.getString('projectId') ?? '',
+					projectName: data.getString('projectName') ?? '',
+					cwd: data.getString('cwd') ?? '',
+					preparedNewThreadId: data.getString('preparedNewThreadId') ?? '',
+					preparedAt: data.getString('preparedAt') ?? '',
+					threadId: data.getString('threadId') ?? '',
+					sessionFile: data.getString('sessionFile') ?? '',
+					error: data.getString('error') ?? '',
+				}
+				done(true, result, '')
+			} catch (_) {
+				done(false, emptyCreateThreadResult('响应解析失败'), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, emptyCreateThreadResult(err.errMsg), err.errMsg)
+		},
+	})
+}
+
+export function apiCodexSend(projectId: string, threadId: string, text: string, clientRequestId: string, newThreadScope: string, done: (ok: boolean, result: CodexSendResult, error: string) => void): void {
+	const url = apiUrl('/api/codex/send')
+	if (url.length == 0) {
+		done(false, emptySendResult('请先填写 VibeGo server 地址'), '请先填写 VibeGo server 地址')
+		return
+	}
+	console.log('[vibego-app-debug] apiCodexSend request', url, 'projectId=', projectId, 'threadId=', threadId, 'clientRequestId=', clientRequestId, 'newThreadScope=', newThreadScope, 'textLength=', text.length)
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'content-type': 'application/json',
+		},
+		data: {
+			projectId,
+			threadId,
+			text,
+			clientRequestId,
+			newThreadScope,
+			assumeThreadSynced: threadId.length > 0,
+			directPasteWithoutClick: false,
+		},
+		timeout: 60000,
+		success: (res) => {
+			console.log('[vibego-app-debug] apiCodexSend response', 'statusCode=', res.statusCode, 'data=', JSON.stringify(res.data))
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				let message = 'HTTP ' + res.statusCode.toString()
+				try {
+					const errorData = responseJson(res.data)
+					if (errorData != null) message = message + ' ' + (errorData.getString('detail') ?? (errorData.getString('error') ?? ''))
+				} catch (_) {}
+				done(false, emptySendResult(message), message)
+				return
+			}
+				try {
+					const data = responseJson(res.data)
+					if (data == null || data.getBoolean('ok') != true) {
+						if (data == null) {
+							done(false, emptySendResult('响应解析失败'), '响应解析失败')
+							return
+						}
+						const code = data.getString('code') ?? ''
+						const message = codexSendErrorMessage(code, data.getString('error') ?? '')
+						const result = emptySendResult(message)
+						result.sendId = data.getString('sendId') ?? ''
+						result.accepted = data.getBoolean('accepted') == true
+						result.threadId = data.getString('threadId') ?? ''
+						result.sessionFile = data.getString('sessionFile') ?? ''
+						result.sentAt = data.getString('sentAt') ?? ''
+						result.watch = parseCodexWatch(data.getJSON('watch'))
+						result.events = parseCodexEvents(data)
+						done(false, result, message)
+						return
+					}
+				const result: CodexSendResult = {
+					ok: true,
+					sendId: data.getString('sendId') ?? '',
+					accepted: data.getBoolean('accepted') == true,
+					threadId: data.getString('threadId') ?? '',
+					sessionFile: data.getString('sessionFile') ?? '',
+					sentAt: data.getString('sentAt') ?? '',
+					watch: parseCodexWatch(data.getJSON('watch')),
+					events: parseCodexEvents(data),
+					error: data.getString('error') ?? '',
+				}
+				done(true, result, '')
+			} catch (error) {
+				console.log('apiCodexSend parse failed', error)
+				done(false, emptySendResult('响应解析失败'), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			console.log('[vibego-app-debug] apiCodexSend fail', err.errMsg)
+			done(false, emptySendResult(err.errMsg), err.errMsg)
+		},
+	})
+}
+
+function codexStatusUrl(watch: CodexWatch): string {
+	let url = apiUrl('/api/codex/status?sendId=' + encodeURIComponent(watch.sendId))
+	if (url.length == 0) return ''
+	if (watch.since.length > 0) url = url + '&since=' + encodeURIComponent(watch.since)
+	if (watch.threadId.length > 0) url = url + '&thread=' + encodeURIComponent(watch.threadId)
+	if (watch.sessionFile.length > 0) url = url + '&session=' + encodeURIComponent(watch.sessionFile)
+	if (watch.expectNewThread) url = url + '&expectNewThread=1'
+	if (watch.excludeThreadId.length > 0) url = url + '&excludeThread=' + encodeURIComponent(watch.excludeThreadId)
+	if (watch.cwd.length > 0) url = url + '&cwd=' + encodeURIComponent(watch.cwd)
+	url = url + '&compact=1'
+	return url
+}
+
+export function apiCodexStatus(watch: CodexWatch, done: (status: CodexStatus) => void): void {
+	const url = codexStatusUrl(watch)
+	if (url.length == 0) {
+		done({ ok: false, available: false, accepted: false, active: false, status: 'offline', threadId: watch.threadId, sessionFile: watch.sessionFile, preview: '', final: '', error: '请先填写 VibeGo server 地址', events: new Array<CodexEvent>() })
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 8000,
+		success: (res) => {
+			try {
+				const data = responseJson(res.data)
+				if (data == null) {
+					done({ ok: false, available: false, accepted: false, active: false, status: 'parse-failed', threadId: watch.threadId, sessionFile: watch.sessionFile, preview: '', final: '', error: '响应解析失败', events: new Array<CodexEvent>() })
+					return
+				}
+				done({
+					ok: data.getBoolean('ok') == true,
+					available: data.getBoolean('available') == true,
+					accepted: data.getBoolean('accepted') == true,
+					active: data.getBoolean('active') == true,
+					status: data.getString('status') ?? '',
+					threadId: data.getString('threadId') ?? watch.threadId,
+					sessionFile: data.getString('sessionFile') ?? watch.sessionFile,
+					preview: data.getString('preview') ?? '',
+					final: data.getString('final') ?? '',
+					error: data.getString('error') ?? '',
+					events: parseCodexEvents(data),
+				})
+			} catch (error) {
+				console.log('apiCodexStatus parse failed', error)
+				done({ ok: false, available: false, accepted: false, active: false, status: 'parse-failed', threadId: watch.threadId, sessionFile: watch.sessionFile, preview: '', final: '', error: '响应解析失败', events: new Array<CodexEvent>() })
+			}
+		},
+		fail: (err) => {
+			done({ ok: false, available: false, accepted: false, active: false, status: 'offline', threadId: watch.threadId, sessionFile: watch.sessionFile, preview: '', final: '', error: err.errMsg, events: new Array<CodexEvent>() })
+		},
+	})
+}
+
+export function apiListMobile(path: string, done: (ok: boolean, entries: Array<FsEntry>, error: string) => void): void {
+	const url = apiUrl('/api/list?path=' + encodeURIComponent(path))
+	if (url.length == 0) {
+		done(false, new Array<FsEntry>(), '请先填写 vibe-go server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, new Array<FsEntry>(), 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, new Array<FsEntry>(), data == null ? '响应解析失败' : (data.getString('error') ?? '读取目录失败'))
+					return
+				}
+				const rawEntries = data.getArray('entries') ?? new Array<any>()
+				const entries = new Array<FsEntry>()
+				for (let index: Int = 0; index < rawEntries.length; index++) {
+					const item = rawEntries[index] as UTSJSONObject
+					entries.push({
+						name: item.getString('name') ?? '',
+						type: item.getString('type') ?? 'other',
+						size: item.getNumber('size') ?? 0,
+						mtimeMs: item.getNumber('mtimeMs') ?? 0,
+					})
+				}
+				done(true, entries, '')
+			} catch (error) {
+				console.log('apiListMobile parse failed', error)
+				done(false, new Array<FsEntry>(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, new Array<FsEntry>(), err.errMsg)
+		},
+	})
+}
+
+export function apiListProject(projectId: string, path: string, done: (ok: boolean, entries: Array<FsEntry>, error: string) => void): void {
+	const url = apiUrl('/api/files/list?projectId=' + encodeURIComponent(projectId) + '&path=' + encodeURIComponent(path))
+	requestListUrl(url, done)
+}
+
+function requestListUrl(url: string, done: (ok: boolean, entries: Array<FsEntry>, error: string) => void): void {
+	if (url.length == 0) {
+		done(false, new Array<FsEntry>(), '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, new Array<FsEntry>(), 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, new Array<FsEntry>(), data == null ? '响应解析失败' : (data.getString('error') ?? '读取目录失败'))
+					return
+				}
+				const rawEntries = data.getArray('entries') ?? new Array<any>()
+				const entries = new Array<FsEntry>()
+				for (let index: Int = 0; index < rawEntries.length; index++) {
+					const item = rawEntries[index] as UTSJSONObject
+					entries.push({
+						name: item.getString('name') ?? '',
+						type: item.getString('type') ?? 'other',
+						size: item.getNumber('size') ?? 0,
+						mtimeMs: item.getNumber('mtimeMs') ?? 0,
+					})
+				}
+				done(true, entries, '')
+			} catch (error) {
+				console.log('requestListUrl parse failed', error)
+				done(false, new Array<FsEntry>(), '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, new Array<FsEntry>(), err.errMsg)
+		},
+	})
+}
+
+export function apiReadMobile(path: string, done: (ok: boolean, result: FileReadResult | null, error: string) => void): void {
+	const url = apiUrl('/api/read?path=' + encodeURIComponent(path))
+	if (url.length == 0) {
+		done(false, null, '请先填写 vibe-go server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, null, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, null, data == null ? '响应解析失败' : (data.getString('error') ?? '读取文件失败'))
+					return
+				}
+				done(true, {
+					path: data.getString('path') ?? path,
+					text: data.getString('text') ?? '',
+					size: data.getNumber('size') ?? 0,
+					mtimeMs: data.getNumber('mtimeMs') ?? 0,
+				}, '')
+			} catch (error) {
+				console.log('apiReadMobile parse failed', error)
+				done(false, null, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, null, err.errMsg)
+		},
+	})
+}
+
+export function apiReadProject(projectId: string, path: string, done: (ok: boolean, result: FileReadResult | null, error: string) => void): void {
+	const url = apiUrl('/api/files/read?projectId=' + encodeURIComponent(projectId) + '&path=' + encodeURIComponent(path))
+	requestReadUrl(url, path, done)
+}
+
+function requestReadUrl(url: string, path: string, done: (ok: boolean, result: FileReadResult | null, error: string) => void): void {
+	if (url.length == 0) {
+		done(false, null, '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'GET',
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, null, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, null, data == null ? '响应解析失败' : (data.getString('error') ?? '读取文件失败'))
+					return
+				}
+				done(true, {
+					path: data.getString('path') ?? path,
+					text: data.getString('text') ?? '',
+					size: data.getNumber('size') ?? 0,
+					mtimeMs: data.getNumber('mtimeMs') ?? 0,
+				}, '')
+			} catch (error) {
+				console.log('requestReadUrl parse failed', error)
+				done(false, null, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, null, err.errMsg)
+		},
+	})
+}
+
+export function apiWriteMobile(path: string, text: string, done: (ok: boolean, error: string) => void): void {
+	const url = apiUrl('/api/write')
+	if (url.length == 0) {
+		done(false, '请先填写 vibe-go server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'content-type': 'application/json',
+		},
+		data: {
+			path,
+			text,
+		},
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, data == null ? '响应解析失败' : (data.getString('error') ?? '保存失败'))
+					return
+				}
+				done(true, '')
+			} catch (error) {
+				console.log('apiWriteMobile parse failed', error)
+				done(false, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, err.errMsg)
+		},
+	})
+}
+
+export function apiWriteProject(projectId: string, path: string, text: string, done: (ok: boolean, error: string) => void): void {
+	const url = apiUrl('/api/files/write')
+	if (url.length == 0) {
+		done(false, '请先填写 VibeGo server 地址')
+		return
+	}
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'content-type': 'application/json',
+		},
+		data: {
+			projectId,
+			path,
+			text,
+		},
+		timeout: 10000,
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = responseJson(res.data)
+				if (data == null || data.getBoolean('ok') != true) {
+					done(false, data == null ? '响应解析失败' : (data.getString('error') ?? '保存失败'))
+					return
+				}
+				done(true, '')
+			} catch (error) {
+				console.log('apiWriteProject parse failed', error)
+				done(false, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, err.errMsg)
+		},
+	})
+}
+
+export function uploadMobileFile(
+	filePath: string,
+	sourceUri: string,
+	mimeType: string,
+	done: (ok: boolean, record: UploadRecord | null, error: string) => void,
+): void {
+	const url = apiUrl('/api/mobile/uploads')
+	if (url.length == 0) {
+		done(false, null, '请先填写 vibe-go server 地址')
+		return
+	}
+
+	uni.uploadFile({
+		url,
+		filePath,
+		name: 'file',
+		header: {
+			'x-vibego-server-url': getServerUrl(),
+		},
+		formData: {
+			sourceUri,
+			mimeType,
+		},
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, null, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = JSON.parse(res.data) as UTSJSONObject
+				if (data.getBoolean('ok') == true) {
+					const record: UploadRecord = {
+						name: data.getString('name') ?? '',
+						path: data.getString('path') ?? '',
+						url: data.getString('url') ?? '',
+						mimeType: data.getString('mimeType') ?? mimeType,
+						size: data.getNumber('size') ?? 0,
+						sourceUri: data.getString('sourceUri') ?? sourceUri,
+						createdAt: data.getString('createdAt') ?? new Date().toISOString(),
+					}
+					saveUploadRecord(record)
+					done(true, record, '')
+				} else {
+					done(false, null, data.getString('error') ?? '上传失败')
+				}
+			} catch (error) {
+				console.log('uploadMobileFile parse failed', error)
+				done(false, null, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, null, err.errMsg)
+		},
+	})
+}
+
+export function transcribeMobileAudio(filePath: string, done: (ok: boolean, text: string, error: string) => void): void {
+	const url = apiUrl('/api/mobile/transcribe-audio')
+	if (url.length == 0) {
+		done(false, '', '请先填写 vibe-go server 地址')
+		return
+	}
+	uni.uploadFile({
+		url,
+		filePath,
+		name: 'audio',
+		header: {
+			'x-vibego-server-url': getServerUrl(),
+		},
+		formData: {
+			mimeType: 'audio/mp4',
+		},
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, '', 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = JSON.parse(res.data) as UTSJSONObject
+				if (data.getBoolean('ok') == true) {
+					done(true, data.getString('text') ?? '', '')
+				} else {
+					done(false, '', data.getString('error') ?? '转写失败')
+				}
+			} catch (error) {
+				console.log('transcribeMobileAudio parse failed', error)
+				done(false, '', '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, '', err.errMsg)
+		},
+	})
+}
+
+export function uploadAnnotation(
+	imagePath: string,
+	payload: string,
+	done: (ok: boolean, record: AnnotationRecord | null, error: string) => void,
+): void {
+	const url = apiUrl('/api/mobile/annotations')
+	if (url.length == 0) {
+		done(false, null, '请先填写 vibe-go server 地址')
+		return
+	}
+
+	uni.uploadFile({
+		url,
+		filePath: imagePath,
+		name: 'image',
+		header: {
+			'x-vibego-server-url': getServerUrl(),
+		},
+		formData: {
+			payload,
+		},
+		success: (res) => {
+			if (res.statusCode < 200 || res.statusCode >= 300) {
+				done(false, null, 'HTTP ' + res.statusCode.toString())
+				return
+			}
+			try {
+				const data = JSON.parse(res.data) as UTSJSONObject
+				if (data.getBoolean('ok') == true) {
+					const record: AnnotationRecord = {
+						imagePath: data.getString('imagePath') ?? '',
+						jsonPath: data.getString('jsonPath') ?? '',
+						createdAt: data.getString('createdAt') ?? new Date().toISOString(),
+					}
+					saveAnnotationRecord(record)
+					done(true, record, '')
+				} else {
+					done(false, null, data.getString('error') ?? '标注上传失败')
+				}
+			} catch (error) {
+				console.log('uploadAnnotation parse failed', error)
+				done(false, null, '响应解析失败')
+			}
+		},
+		fail: (err) => {
+			done(false, null, err.errMsg)
+		},
+	})
+}

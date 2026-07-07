@@ -1,0 +1,76 @@
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import Intent from 'android.content.Intent'
+import Settings from 'android.provider.Settings'
+import SharedPreferences from 'android.content.SharedPreferences'
+// #endif
+
+export type NotificationListenerState = {
+	enabled: boolean
+	events: Array<string>
+	message: string
+}
+
+// #ifdef APP-ANDROID
+function appContext(): Context | null {
+	return UTSAndroid.getAppContext()
+}
+
+function prefs(context: Context): SharedPreferences {
+	return context.getSharedPreferences('vibego_background_probe', Context.MODE_PRIVATE)
+}
+
+function listenerEnabled(context: Context): boolean {
+	try {
+		const enabled = Settings.Secure.getString(context.getContentResolver(), 'enabled_notification_listeners') ?? ''
+		return enabled.indexOf(context.getPackageName()) >= 0
+	} catch (error) {
+		console.log('[vibego-notification-listener]', 'check failed', error)
+		return false
+	}
+}
+
+function readEvents(context: Context): Array<string> {
+	const raw = prefs(context).getString('notificationLogs', '') ?? ''
+	const events = new Array<string>()
+	if (raw.length == 0) return events
+	const parts = raw.split('\n')
+	for (let index: Int = 0; index < parts.length; index++) {
+		if (parts[index].length > 0) events.push(parts[index])
+	}
+	return events
+}
+// #endif
+
+export function getNotificationListenerState(done: (state: NotificationListenerState) => void): void {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	if (context == null) {
+		done({ enabled: false, events: new Array<string>(), message: 'Context 不可用' })
+		return
+	}
+	const enabled = listenerEnabled(context)
+	done({
+		enabled,
+		events: readEvents(context),
+		message: enabled ? '通知监听已授权' : '通知监听未授权，请进入系统通知使用权设置',
+	})
+	// #endif
+}
+
+export function openNotificationListenerSettings(): boolean {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	try {
+		const intent = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-notification-listener]', 'open settings failed', error)
+		return false
+	}
+	// #endif
+	return false
+}

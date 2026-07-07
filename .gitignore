@@ -1,0 +1,27 @@
+.DS_Store
+node_modules/
+
+# Local config and credentials
+.env
+.env.local
+.env.*.local
+server/config.json
+server/.env
+server/.env.local
+
+# Runtime files
+*.log
+server/uploads/
+
+# uni-app build outputs
+VibeGo/unpackage/
+
+# Local IDE/cache files
+VibeGo/.hbuilderx/
+VibeGo/.vibego-inbox/
+.hbuilderx/.cache/
+
+# Backups and temporary files
+*.bak
+*.tmp
+*.temp

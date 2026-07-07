@@ -1,0 +1,482 @@
+import { uploadMobileFile } from './mobile-api.uts'
+
+// #ifdef APP-ANDROID
+import View from 'android.view.View'
+import OnDragListener from 'android.view.View.OnDragListener'
+import DragEvent from 'android.view.DragEvent'
+import DragAndDropPermissions from 'android.view.DragAndDropPermissions'
+import ClipData from 'android.content.ClipData'
+import Uri from 'android.net.Uri'
+import File from 'java.io.File'
+import FileInputStream from 'java.io.FileInputStream'
+import FileOutputStream from 'java.io.FileOutputStream'
+import InputStream from 'java.io.InputStream'
+import Toast from 'android.widget.Toast'
+import Build from 'android.os.Build'
+import PackageManager from 'android.content.pm.PackageManager'
+// #endif
+
+export type DropEventInfo = {
+	action: string
+	message: string
+	x: number
+	y: number
+}
+
+export type DropUploadedInfo = {
+	name: string
+	path: string
+	url: string
+	mimeType: string
+	size: number
+	sourceUri: string
+	createdAt: string
+	x: number
+	y: number
+}
+
+// #ifdef APP-ANDROID
+let activeDropListener: GlobalFileDropListener | null = null
+let activeDragPermissions: DragAndDropPermissions | null = null
+let lastDropKey = ''
+let lastDropAt = 0
+const DROP_FOREGROUND_MARK_KEY = 'vibego.dropForegroundAt'
+
+function dropLog(stage: string, message: string): void {
+	console.log('[vibego-file-drop]', stage, message)
+}
+
+function dropErrorLog(stage: string, message: string, error: any): void {
+	console.log('[vibego-file-drop]', stage, message, error)
+}
+
+function emitDropEvent(action: string, message: string, x: number, y: number): void {
+	uni.setStorageSync(DROP_FOREGROUND_MARK_KEY, Date.now().toString())
+	uni.$emit('mobile-drop-event', {
+		action,
+		message,
+		x,
+		y,
+	} as DropEventInfo)
+}
+
+function releaseDragPermissions(): void {
+	if (activeDragPermissions == null) return
+	try {
+		activeDragPermissions?.release()
+	} catch (error) {
+		dropErrorLog('permissions-release-failed', '', error)
+	}
+	activeDragPermissions = null
+}
+
+function describeUri(uri: Uri): string {
+	return uri.toString()
+}
+
+function normalizedAuthority(uri: Uri): string {
+	const raw = uri.getAuthority() ?? ''
+	const at = raw.lastIndexOf('@')
+	if (at >= 0 && at < raw.length - 1) return raw.substring(at + 1)
+	return raw
+}
+
+function pageX(v: View | null, x: number): number {
+	if (v == null) return x
+	const viewWidth = v.getWidth()
+	if (viewWidth <= 0) return x
+	try {
+		const info = uni.getSystemInfoSync()
+		const windowWidth = info.windowWidth
+		if (windowWidth > 0) return x * windowWidth / viewWidth
+	} catch (_) {}
+	return x
+}
+
+function pageY(v: View | null, y: number): number {
+	if (v == null) return y
+	const viewHeight = v.getHeight()
+	if (viewHeight <= 0) return y
+	try {
+		const info = uni.getSystemInfoSync()
+		const windowHeight = info.windowHeight
+		if (windowHeight > 0) return y * windowHeight / viewHeight
+	} catch (_) {}
+	return y
+}
+
+class GlobalFileDropListener implements OnDragListener {
+	override onDrag(v?: View, event?: DragEvent): boolean {
+		if (event == null) return true
+
+		const action = event.getAction()
+		if (action == DragEvent.ACTION_DRAG_STARTED) {
+			emitDropEvent('DRAG_STARTED', '开始接收拖拽', pageX(v ?? null, event.getX()), pageY(v ?? null, event.getY()))
+			return true
+		}
+		if (action == DragEvent.ACTION_DRAG_ENTERED) {
+			emitDropEvent('DRAG_ENTERED', '文件进入 APP', pageX(v ?? null, event.getX()), pageY(v ?? null, event.getY()))
+			return true
+		}
+		if (action == DragEvent.ACTION_DRAG_LOCATION) {
+			return true
+		}
+		if (action == DragEvent.ACTION_DROP) {
+			const dropX = pageX(v ?? null, event.getX())
+			const dropY = pageY(v ?? null, event.getY())
+			const clipData = event.getClipData()
+			if (shouldSkipDuplicateDrop(clipData)) return true
+			try {
+				releaseDragPermissions()
+				activeDragPermissions = UTSAndroid.getUniActivity()?.requestDragAndDropPermissions(event) ?? null
+				dropLog('drop', 'permissions=' + (activeDragPermissions != null ? 'granted' : 'missing') + ' x=' + dropX.toString() + ' y=' + dropY.toString())
+			} catch (error) {
+				dropErrorLog('drop', 'requestDragAndDropPermissions failed', error)
+			}
+			handleClipData(clipData, dropX, dropY)
+			return true
+		}
+		if (action == DragEvent.ACTION_DRAG_ENDED) {
+			emitDropEvent('DRAG_ENDED', '拖拽结束', pageX(v ?? null, event.getX()), pageY(v ?? null, event.getY()))
+			return true
+		}
+		return true
+	}
+}
+
+function clipDataDropKey(clipData: ClipData | null): string {
+	if (clipData == null) return 'empty'
+	const parts = new Array<string>()
+	parts.push(clipData.getItemCount().toString())
+	for (let index: Int = 0; index < clipData.getItemCount(); index++) {
+		const item = clipData.getItemAt(index)
+		const uri = item.getUri()
+		if (uri != null) {
+			parts.push(uri.toString())
+		} else {
+			const text = item.getText()
+			parts.push(text != null ? text.toString() : '')
+		}
+	}
+	return parts.join('|')
+}
+
+function shouldSkipDuplicateDrop(clipData: ClipData | null): boolean {
+	const now = Date.now()
+	const key = clipDataDropKey(clipData)
+	if (key == lastDropKey && now - lastDropAt < 1500) {
+		dropLog('drop-skip-duplicate', key)
+		return true
+	}
+	lastDropKey = key
+	lastDropAt = now
+	return false
+}
+
+function handleClipData(clipData: ClipData | null, dropX: number, dropY: number): void {
+	if (clipData == null || clipData.getItemCount() == 0) {
+		dropLog('clip', 'empty clipData')
+		uni.showToast({ title: '没有读取到拖拽文件', icon: 'none' })
+		return
+	}
+
+	const count = clipData.getItemCount()
+	for (let index: Int = 0; index < count; index++) {
+		const item = clipData.getItemAt(index)
+		const uri = item.getUri()
+		if (uri == null) {
+			const text = item.getText()
+			if (text != null) {
+				emitDropEvent('TEXT', text.toString(), dropX, dropY)
+			}
+			continue
+		}
+		dropLog('clip', 'item=' + index.toString() + ' uri=' + describeUri(uri))
+		copyAndUploadUri(uri, dropX, dropY, false)
+	}
+}
+
+function mediaReadPermissions(mimeType: string): Array<string> {
+	const permissions = new Array<string>()
+	const activity = UTSAndroid.getUniActivity()
+	const targetSdk = activity?.getApplicationInfo().targetSdkVersion ?? 0
+	if (targetSdk > 0 && targetSdk < 33) {
+		permissions.push('android.permission.READ_EXTERNAL_STORAGE')
+		return permissions
+	}
+	if (Build.VERSION.SDK_INT >= 34) {
+		permissions.push('android.permission.READ_MEDIA_IMAGES')
+		permissions.push('android.permission.READ_MEDIA_VISUAL_USER_SELECTED')
+	} else if (Build.VERSION.SDK_INT >= 33) {
+		if (mimeType.startsWith('video/')) {
+			permissions.push('android.permission.READ_MEDIA_VIDEO')
+		} else if (mimeType.startsWith('audio/')) {
+			permissions.push('android.permission.READ_MEDIA_AUDIO')
+		} else {
+			permissions.push('android.permission.READ_MEDIA_IMAGES')
+		}
+	} else {
+		permissions.push('android.permission.READ_EXTERNAL_STORAGE')
+	}
+	return permissions
+}
+
+function hasAllPermissions(permissions: Array<string>): boolean {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	for (let index: Int = 0; index < permissions.length; index++) {
+		if (activity.checkSelfPermission(permissions[index]) != PackageManager.PERMISSION_GRANTED) return false
+	}
+	return true
+}
+
+function isMediaStoreUri(uri: Uri): boolean {
+	const authority = normalizedAuthority(uri)
+	return authority == 'media' || authority == 'com.android.providers.media.documents'
+}
+
+function querySingleString(uri: Uri, column: string): string {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return ''
+	try {
+		const resolver = activity.getContentResolver()
+		const cursor = resolver.query(uri, null, null, null, null)
+		if (cursor != null) {
+			try {
+				if (cursor.moveToFirst()) {
+					const columnIndex = cursor.getColumnIndex(column)
+					if (columnIndex >= 0) return cursor.getString(columnIndex) ?? ''
+				}
+			} finally {
+				cursor.close()
+			}
+		}
+	} catch (error) {
+		dropErrorLog('query-failed', 'column=' + column + ' uri=' + describeUri(uri), error)
+	}
+	return ''
+}
+
+function queryDisplayName(uri: Uri): string {
+	return querySingleString(uri, '_display_name')
+}
+
+function queryDirectFilePath(uri: Uri): string {
+	return querySingleString(uri, '_data')
+}
+
+function ensureDropCacheDir(): File | null {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return null
+	const cacheDir = new File(activity.getCacheDir(), 'vibego-drops')
+	if (!cacheDir.exists()) cacheDir.mkdirs()
+	return cacheDir
+}
+
+function makeTargetFile(uri: Uri): File | null {
+	const cacheDir = ensureDropCacheDir()
+	if (cacheDir == null) return null
+	const preferredName = queryDisplayName(uri)
+	const fileName = preferredName.length > 0 ? preferredName : makeLocalFileName(uri)
+	const safe = fileName.replace('/', '_').replace('\\', '_').replace(':', '_')
+	return new File(cacheDir, Date.now().toString() + '-' + safe)
+}
+
+function copyInputStreamToFile(input: InputStream, target: File): void {
+	const output = new FileOutputStream(target)
+	try {
+		const buffer = ByteArray(8192)
+		let read: Int = input.read(buffer)
+		while (read > 0) {
+			output.write(buffer, 0, read)
+			read = input.read(buffer)
+		}
+		output.flush()
+	} finally {
+		try {
+			output.close()
+		} catch (_) {}
+		try {
+			input.close()
+		} catch (_) {}
+	}
+}
+
+function tryCopyFromResolver(uri: Uri, target: File): boolean {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	try {
+		const input = activity.getContentResolver().openInputStream(uri)
+		if (input == null) return false
+		copyInputStreamToFile(input, target)
+		dropLog('copy-resolver-ok', 'uri=' + describeUri(uri) + ' target=' + target.getAbsolutePath())
+		return true
+	} catch (error) {
+		dropErrorLog('copy-resolver-failed', 'uri=' + describeUri(uri) + ' target=' + target.getAbsolutePath(), error)
+	}
+	return false
+}
+
+function tryCopyFromDirectPath(uri: Uri, target: File): boolean {
+	const directPath = queryDirectFilePath(uri)
+	if (directPath.length == 0) {
+		dropLog('copy-direct-skip', 'uri=' + describeUri(uri) + ' reason=no-direct-path')
+		return false
+	}
+	try {
+		const source = new File(directPath)
+		if (!source.exists() || !source.isFile()) {
+			dropLog('copy-direct-skip', 'uri=' + describeUri(uri) + ' source=' + directPath + ' reason=missing-file')
+			return false
+		}
+		const input = new FileInputStream(source)
+		copyInputStreamToFile(input, target)
+		dropLog('copy-direct-ok', 'source=' + directPath + ' target=' + target.getAbsolutePath())
+		return true
+	} catch (error) {
+		dropErrorLog('copy-direct-failed', 'uri=' + describeUri(uri) + ' source=' + directPath + ' target=' + target.getAbsolutePath(), error)
+	}
+	return false
+}
+
+function finishUploadedFile(localPath: string, sourceUri: Uri, mimeType: string, dropX: number, dropY: number): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		releaseDragPermissions()
+		uni.showToast({ title: 'Activity 不可用', icon: 'none' })
+		return
+	}
+	emitDropEvent('DROP', '已复制拖拽文件: ' + localPath, dropX, dropY)
+	uploadMobileFile(localPath, sourceUri.toString(), mimeType, (ok, record, error) => {
+		releaseDragPermissions()
+		if (ok && record != null) {
+			dropLog('upload-ok', 'local=' + localPath + ' mime=' + mimeType + ' sourceUri=' + sourceUri.toString())
+			uni.$emit('mobile-drop-uploaded', {
+				name: record.name,
+				path: record.path,
+				url: record.url,
+				mimeType: record.mimeType,
+				size: record.size,
+				sourceUri: record.sourceUri,
+				createdAt: record.createdAt,
+				x: dropX,
+				y: dropY,
+			} as DropUploadedInfo)
+			Toast.makeText(activity, '文件已上传到 vibe-go', Toast.LENGTH_SHORT).show()
+		} else {
+			dropLog('upload-failed', 'local=' + localPath + ' mime=' + mimeType + ' sourceUri=' + sourceUri.toString() + ' error=' + error)
+			uni.showToast({ title: error, icon: 'none' })
+		}
+	})
+}
+
+function requestMediaPermissionThenRetry(uri: Uri, dropX: number, dropY: number, mimeType: string): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		uni.showToast({ title: 'Activity 不可用', icon: 'none' })
+		return
+	}
+	const permissions = mediaReadPermissions(mimeType)
+	if (hasAllPermissions(permissions)) {
+		copyAndUploadUri(uri, dropX, dropY, true)
+		return
+	}
+	const targetSdk = activity.getApplicationInfo().targetSdkVersion
+	dropLog('permissions-request', 'uri=' + describeUri(uri) + ' mime=' + mimeType + ' targetSdk=' + targetSdk.toString() + ' permissions=' + permissions.join(','))
+	UTSAndroid.requestSystemPermission(activity, permissions, function (_allRight: boolean, _grantedList: string[]) {
+		dropLog('permissions-result', 'uri=' + describeUri(uri) + ' granted')
+		copyAndUploadUri(uri, dropX, dropY, true)
+	}, function (_doNotAskAgain: boolean, _grantedList: string[]) {
+		releaseDragPermissions()
+		dropLog('permissions-result', 'uri=' + describeUri(uri) + ' denied')
+		uni.showToast({ title: '需要允许读取图片后才能上传截图', icon: 'none' })
+	})
+}
+
+function copyAndUploadUri(uri: Uri, dropX: number, dropY: number, retried: boolean): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		releaseDragPermissions()
+		uni.showToast({ title: 'Activity 不可用', icon: 'none' })
+		return
+	}
+
+	try {
+		const resolver = activity.getContentResolver()
+		const mimeType = resolver.getType(uri) ?? 'application/octet-stream'
+		dropLog('copy-start', 'uri=' + describeUri(uri) + ' mime=' + mimeType + ' retried=' + retried.toString() + ' mediaStore=' + isMediaStoreUri(uri).toString())
+		if (!retried && isMediaStoreUri(uri) && !hasAllPermissions(mediaReadPermissions(mimeType))) {
+			requestMediaPermissionThenRetry(uri, dropX, dropY, mimeType)
+			return
+		}
+		const target = makeTargetFile(uri)
+		if (target == null) {
+			releaseDragPermissions()
+			uni.showToast({ title: '无法准备缓存文件', icon: 'none' })
+			return
+		}
+		let copied = tryCopyFromResolver(uri, target)
+		if (!copied && isMediaStoreUri(uri)) {
+			copied = tryCopyFromDirectPath(uri, target)
+		}
+		if (!copied) {
+			dropLog('copy-failed', 'uri=' + describeUri(uri) + ' target=' + target.getAbsolutePath())
+			releaseDragPermissions()
+			uni.showToast({ title: retried ? '仍然无法读取截图文件，请给“所有照片”权限后重试' : '无法读取拖拽文件', icon: 'none' })
+			return
+		}
+		finishUploadedFile(target.getAbsolutePath(), uri, mimeType, dropX, dropY)
+	} catch (error) {
+		if (!retried) {
+			try {
+				const mimeType = activity.getContentResolver().getType(uri) ?? 'application/octet-stream'
+				requestMediaPermissionThenRetry(uri, dropX, dropY, mimeType)
+				return
+			} catch (_) {}
+		}
+		releaseDragPermissions()
+		uni.showToast({ title: '拖拽文件处理失败', icon: 'none' })
+		dropErrorLog('copy-exception', 'uri=' + describeUri(uri), error)
+	}
+}
+
+function makeLocalFileName(uri: Uri): string {
+	const raw = uri.getLastPathSegment() ?? 'drop-file'
+	const safe = raw.replace('/', '_').replace('\\', '_').replace(':', '_')
+	return Date.now().toString() + '-' + safe
+}
+// #endif
+
+export function uploadSharedUriString(uriText: string): void {
+	// #ifdef APP-ANDROID
+	if (uriText.length == 0) return
+	try {
+		const uri = Uri.parse(uriText)
+		dropLog('share-uri', 'uri=' + describeUri(uri))
+		copyAndUploadUri(uri, 0, 0, false)
+	} catch (error) {
+		dropErrorLog('share-uri-failed', 'uri=' + uriText, error)
+		uni.showToast({ title: '分享文件处理失败', icon: 'none' })
+	}
+	// #endif
+}
+
+export function installGlobalFileDrop(): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return
+	if (activeDropListener == null) activeDropListener = new GlobalFileDropListener()
+	activity.getWindow().getDecorView().setOnDragListener(activeDropListener)
+	// #endif
+}
+
+export function uninstallGlobalFileDrop(): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity != null) {
+		activity.getWindow().getDecorView().setOnDragListener(null)
+	}
+	activeDropListener = null
+	releaseDragPermissions()
+	// #endif
+}

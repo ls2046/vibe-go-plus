@@ -1,0 +1,128 @@
+	<template>
+		<view class="thread-list-card list-card" :style="cardStyle">
+			<view class="thread-list-topbar">
+				<view class="thread-list-new-thread" hover-class="project-action-pressed" hover-stay-time="120" @click.stop="$emit('newThread')">
+					<image class="thread-list-new-thread-icon" :src="plusIconSrc()" mode="aspectFit"></image>
+					<text class="thread-list-new-thread-text">新建会话</text>
+				</view>
+			</view>
+			<scroll-view class="thread-list" scroll-y="true" scroll-with-animation="true" :scroll-top="listScrollTop">
+				<view v-for="(group, projectIndex) in localProjectGroups" :key="group.project.id" class="project-group">
+					<view v-if="group.kind == 'conversation'" class="conversation-group">
+					<view class="conversation-section-header">
+						<text class="conversation-section-title">对话</text>
+						<view class="project-new-thread" hover-class="project-action-pressed" hover-stay-time="120" @click.stop="$emit('newThread')">
+							<text class="project-new-thread-text">新对话</text>
+						</view>
+					</view>
+					<view class="project-thread-list">
+						<view v-for="thread in group.threads" :key="thread.id" class="thread-row conversation-thread-row" :class="threadRowStateClass(thread)" hover-class="thread-row-pressed" hover-stay-time="120" @click="$emit('selectThread', thread.id)">
+							<view class="thread-active-dot" :class="isThreadActive(thread.id) ? 'thread-active-dot-on' : ''"></view>
+							<text class="thread-name" :class="isThreadActive(thread.id) ? 'thread-name-active' : ''">{{ displayThreadTitle(thread) }}</text>
+						</view>
+					</view>
+				</view>
+					<view v-else>
+						<view class="project-title-row" :class="projectTitleStateClass(group)" hover-class="project-title-row-pressed" hover-stay-time="120" @click="$emit('toggleProjectGroup', projectIndex)">
+						<view class="project-folder-shell" :class="isProjectActive(group.project.id) ? 'project-folder-shell-active' : ''">
+							<image class="icon project-folder-icon" :src="folderIconSrc(group.project.id)" mode="aspectFit"></image>
+						</view>
+						<text class="project-title" :class="isProjectActive(group.project.id) ? 'project-title-text-active' : ''">{{ group.project.name }}</text>
+						<view class="project-title-actions">
+							<view class="project-new-thread" hover-class="project-action-pressed" hover-stay-time="120" @click.stop="$emit('startProjectThread', group.project)">
+								<text class="project-new-thread-text">新对话</text>
+							</view>
+						</view>
+						<text class="project-count" :class="isProjectActive(group.project.id) ? 'project-count-active' : ''">{{ group.threads.length.toString() }}</text>
+					</view>
+					<view v-if="!group.collapsed" class="project-thread-list">
+						<view v-for="thread in group.threads" :key="thread.id" class="thread-row project-thread-row" :class="threadRowStateClass(thread)" hover-class="thread-row-pressed" hover-stay-time="120" @click="$emit('selectThread', thread.id)">
+							<view class="thread-active-dot" :class="isThreadActive(thread.id) ? 'thread-active-dot-on' : ''"></view>
+							<text class="thread-name" :class="isThreadActive(thread.id) ? 'thread-name-active' : ''">{{ displayThreadTitle(thread) }}</text>
+						</view>
+					</view>
+				</view>
+			</view>
+		</scroll-view>
+	</view>
+</template>
+
+<script lang="uts">
+import { type CodexThread, type ProjectThreadGroup } from '../modules/index-types.uts'
+import { displayThreadTitle } from '../modules/thread-groups.uts'
+
+export default {
+	props: {
+		projectGroups: {
+			type: Array,
+			default: (): Array<ProjectThreadGroup> => new Array<ProjectThreadGroup>(),
+		},
+				activeThreadId: { type: String, default: '' },
+				activeProjectId: { type: String, default: '' },
+				cardStyle: { type: String, default: '' },
+				scrollTargetTop: { type: Number, default: 0 },
+				scrollRequestKey: { type: Number, default: 0 },
+				nightMode: { type: Boolean, default: false },
+			},
+	emits: ['newThread', 'selectThread', 'toggleProjectGroup', 'startProjectThread'],
+	data() {
+				return {
+					localProjectGroups: new Array<ProjectThreadGroup>(),
+					listScrollTop: 0,
+				}
+			},
+	watch: {
+		'projectGroups': {
+			handler(newValue: Array<ProjectThreadGroup>, _oldValue: Array<ProjectThreadGroup>) {
+				this.localProjectGroups = newValue
+			},
+				immediate: true,
+				},
+				'scrollRequestKey': {
+					handler(_newValue: number, _oldValue: number) {
+						this.applyScrollTop(this.scrollTargetTop)
+					},
+					immediate: true,
+				},
+			},
+			methods: {
+				applyScrollTop(targetTop: number) {
+					const nextTop = targetTop > 0 ? targetTop : 0
+					if (this.listScrollTop == nextTop) {
+						this.listScrollTop = nextTop > 0 ? nextTop - 1 : 1
+					}
+					setTimeout(() => {
+						this.listScrollTop = nextTop
+					}, 20)
+				},
+			isThreadActive(threadId: string): boolean {
+			return threadId.length > 0 && this.activeThreadId == threadId
+		},
+			isProjectActive(projectId: string): boolean {
+				if (projectId.length == 0) return false
+				for (let index: Int = 0; index < this.localProjectGroups.length; index++) {
+					const group = this.localProjectGroups[index]
+					if (group.project.id == projectId && !group.collapsed) return true
+			}
+			return false
+		},
+		projectTitleStateClass(group: ProjectThreadGroup): string {
+			if (group.kind == 'conversation') return ''
+			return this.isProjectActive(group.project.id) ? 'project-title-active' : ''
+		},
+		threadRowStateClass(thread: CodexThread): string {
+			return this.isThreadActive(thread.id) ? 'thread-active' : ''
+		},
+		displayThreadTitle(thread: CodexThread): string {
+			return displayThreadTitle(thread)
+		},
+		plusIconSrc(): string {
+			return this.nightMode ? '/static/icons/plus-night.svg' : '/static/icons/plus.svg'
+		},
+		folderIconSrc(projectId: string): string {
+			if (this.isProjectActive(projectId)) return '/static/icons/folder-active.svg'
+			return this.nightMode ? '/static/icons/folder-night.svg' : '/static/icons/folder.svg'
+		},
+	},
+}
+</script>

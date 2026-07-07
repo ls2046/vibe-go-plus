@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:tools="http://schemas.android.com/tools"
+	package="uts.sdk.modules.vibegoBackgroundProbe">
+
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.WAKE_LOCK" />
+	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+	<uses-permission android:name="android.permission.USE_EXACT_ALARM" tools:ignore="ExactAlarm" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+	<uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+	<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+	<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+	<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+	<uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+	<application>
+		<service
+			android:name="uts.sdk.modules.vibegoBackgroundProbe.ProbeForegroundService"
+			android:exported="false"
+			android:foregroundServiceType="dataSync|mediaPlayback|mediaProjection" />
+
+		<service
+			android:name="uts.sdk.modules.vibegoBackgroundProbe.VibeGoNotificationListenerService"
+			android:exported="true"
+			android:label="VibeGo 通知监听"
+			android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+			<intent-filter>
+				<action android:name="android.service.notification.NotificationListenerService" />
+			</intent-filter>
+		</service>
+
+		<receiver
+			android:name="uts.sdk.modules.vibegoBackgroundProbe.AlarmReceiver"
+			android:exported="false" />
+
+		<receiver
+			android:name="uts.sdk.modules.vibegoBackgroundProbe.LocalNotificationReceiver"
+			android:exported="false" />
+	</application>
+</manifest>

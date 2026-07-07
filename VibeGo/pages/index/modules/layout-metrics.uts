@@ -1,0 +1,7 @@
+export function pxSizeStyle(width: number, height: number): string {
+	return 'width:' + width.toString() + 'px;height:' + height.toString() + 'px;'
+}
+
+export function pxHeightStyle(height: number): string {
+	return 'height:' + height.toString() + 'px;'
+}

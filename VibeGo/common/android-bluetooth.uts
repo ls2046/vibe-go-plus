@@ -1,0 +1,96 @@
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import PackageManager from 'android.content.pm.PackageManager'
+import Build from 'android.os.Build'
+import BluetoothManager from 'android.bluetooth.BluetoothManager'
+// #endif
+
+export type BluetoothCapability = {
+	supported: boolean
+	enabled: boolean
+	permissionsGranted: boolean
+	message: string
+}
+
+// #ifdef APP-ANDROID
+function bluetoothPermissions(): Array<string> {
+	const permissions = new Array<string>()
+	if (Build.VERSION.SDK_INT >= 31) {
+		permissions.push('android.permission.BLUETOOTH_SCAN')
+		permissions.push('android.permission.BLUETOOTH_CONNECT')
+	} else {
+		permissions.push('android.permission.ACCESS_FINE_LOCATION')
+		permissions.push('android.permission.ACCESS_COARSE_LOCATION')
+	}
+	return permissions
+}
+
+function hasBluetoothPermissions(): boolean {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	const permissions = bluetoothPermissions()
+	for (let index: Int = 0; index < permissions.length; index++) {
+		if (activity.checkSelfPermission(permissions[index]) != PackageManager.PERMISSION_GRANTED) return false
+	}
+	return true
+}
+
+function bluetoothManager(): BluetoothManager | null {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return null
+	return activity.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+}
+// #endif
+
+export function getBluetoothCapability(done: (result: BluetoothCapability) => void): void {
+	// #ifdef APP-ANDROID
+	const manager = bluetoothManager()
+	if (manager == null) {
+		done({
+			supported: false,
+			enabled: false,
+			permissionsGranted: false,
+			message: 'BluetoothManager 不可用',
+		})
+		return
+	}
+	const adapter = manager.getAdapter()
+	if (adapter == null) {
+		done({
+			supported: false,
+			enabled: false,
+			permissionsGranted: false,
+			message: '设备不支持蓝牙',
+		})
+		return
+	}
+	const granted = hasBluetoothPermissions()
+	done({
+		supported: true,
+		enabled: adapter.isEnabled(),
+		permissionsGranted: granted,
+		message: granted ? (adapter.isEnabled() ? '蓝牙已开启，可继续接 BLE 插件或桥接逻辑' : '蓝牙已授权，但系统蓝牙未开启') : '蓝牙权限未授予',
+	})
+	// #endif
+}
+
+export function requestBluetoothCapability(done: (result: BluetoothCapability) => void): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		done({
+			supported: false,
+			enabled: false,
+			permissionsGranted: false,
+			message: 'Activity 不可用',
+		})
+		return
+	}
+	const permissions = bluetoothPermissions()
+	UTSAndroid.requestSystemPermission(activity, permissions, function (_allRight: boolean, _grantedList: string[]) {
+		getBluetoothCapability(done)
+	}, function (_doNotAskAgain: boolean, _grantedList: string[]) {
+		getBluetoothCapability(done)
+	})
+	// #endif
+}

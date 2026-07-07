@@ -1,0 +1,94 @@
+<template>
+	<view class="native-depth-icon-button" :style="shellStyle" @click="onClick">
+		<native-view class="native-depth-icon-button-bg" :style="nativeStyle" @init="onviewinit"></native-view>
+		<image class="native-depth-icon-button-icon" :style="iconStyle" :src="icon" mode="aspectFit"></image>
+	</view>
+</template>
+
+<script lang="uts">
+import { NativeDepthIconButton } from '@/uni_modules/native-depth-icon-button'
+
+export default {
+	props: {
+		icon: { type: String, default: '' },
+		variant: { type: String, default: 'neutral' },
+		active: { type: Boolean, default: false },
+		disabled: { type: Boolean, default: false },
+		size: { type: Number, default: 52 },
+		iconSize: { type: Number, default: 22 },
+	},
+	emits: ['click'],
+	data() {
+		return {
+			nativeButton: null as NativeDepthIconButton | null,
+		}
+	},
+	computed: {
+		shellStyle(): string {
+			return 'width:' + this.size.toString() + 'px;height:' + this.size.toString() + 'px;'
+		},
+		nativeStyle(): string {
+			return 'width:' + this.size.toString() + 'px;height:' + this.size.toString() + 'px;'
+		},
+		iconStyle(): string {
+			const offset = Math.floor((this.size - this.iconSize) / 2)
+			return 'width:' + this.iconSize.toString() + 'px;height:' + this.iconSize.toString() + 'px;left:' + offset.toString() + 'px;top:' + offset.toString() + 'px;'
+		},
+	},
+	watch: {
+		'variant': {
+			handler(_newValue: string, _oldValue: string) {
+				this.updateNative()
+			},
+			immediate: true,
+		},
+		'active': {
+			handler(_newValue: boolean, _oldValue: boolean) {
+				this.updateNative()
+			},
+			immediate: true,
+		},
+		'disabled': {
+			handler(_newValue: boolean, _oldValue: boolean) {
+				this.updateNative()
+			},
+			immediate: true,
+		},
+	},
+	methods: {
+		onviewinit(e: UniNativeViewInitEvent) {
+			this.nativeButton = new NativeDepthIconButton(e.detail.element)
+			this.updateNative()
+		},
+		updateNative() {
+			this.nativeButton?.setAppearance(this.variant, this.active, this.disabled)
+		},
+		onClick() {
+			this.$emit('click')
+		},
+	},
+	unmounted() {
+		this.nativeButton?.destroy()
+		this.nativeButton = null
+	},
+}
+</script>
+
+<style>
+.native-depth-icon-button {
+	position: relative;
+	overflow: visible;
+	align-items: center;
+	justify-content: center;
+}
+
+.native-depth-icon-button-bg {
+	position: absolute;
+	left: 0;
+	top: 0;
+}
+
+.native-depth-icon-button-icon {
+	position: absolute;
+}
+</style>

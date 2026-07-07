@@ -1,0 +1,264 @@
+<template>
+	<view class="drop-dialog-overlay" :class="nightMode ? 'drop-dialog-overlay-night' : ''" @touchstart="onOverlayTouchStart" @touchend="onOverlayTouchEnd" @click="onOverlayClick">
+		<view class="drop-dialog-mask" :class="nightMode ? 'drop-dialog-mask-night' : ''"></view>
+		<view class="drop-dialog" :class="nightMode ? 'drop-dialog-night' : ''" :style="dialogStyle" @click="onDialogClick" @touchend="onDialogTouchEnd">
+			<view class="drop-source-preview" :class="nightMode ? 'drop-source-preview-night' : ''" :style="previewStyle" @click="onPreviewClick">
+				<image v-if="previewIsImage" class="drop-source-preview-image" :src="previewUrl" mode="aspectFit"></image>
+				<view v-else-if="previewIsClipboard" class="drop-source-preview-image drop-source-preview-clipboard">
+					<text class="drop-source-preview-clipboard-label">剪贴板</text>
+					<text class="drop-source-preview-clipboard-text">{{ clipboardPreviewText }}</text>
+				</view>
+				<view v-else class="drop-source-preview-image drop-source-preview-file">
+					<image class="drop-source-preview-icon" :src="fileIconSrc()" mode="aspectFit"></image>
+				</view>
+			</view>
+			<input class="drop-instruction-input" :class="nightMode ? 'drop-instruction-input-night' : ''" v-model="instructionDraft" placeholder="描述你的要求，留空则按默认处理" />
+			<text v-if="dropSendError.length > 0" class="drop-error-text">{{ dropSendError }}</text>
+			<view class="drop-dialog-actions" :class="compact ? 'drop-dialog-actions-compact' : ''">
+				<view class="drop-voice-btn" :class="dropVoiceClass()" @click.stop="onVoiceClick">
+					<image class="drop-voice-icon" src="/static/icons/mic-white.svg" mode="aspectFit"></image>
+				</view>
+				<view class="drop-dialog-spacer" :class="compact ? 'drop-dialog-spacer-compact' : ''"></view>
+				<view class="drop-send-actions" :class="compact ? 'drop-send-actions-compact' : ''">
+					<view v-if="hasCurrentThreadTarget" class="drop-btn drop-btn-secondary" :class="dropButtonClass(canSendCurrent)" @click.stop="onSendCurrentClick">
+						<image class="drop-btn-icon drop-btn-secondary-icon" src="/static/icons/message-active.svg" mode="aspectFit"></image>
+						<text class="drop-btn-text drop-btn-secondary-text" :class="nightMode ? 'drop-btn-text-night' : ''">{{ currentButtonText }}</text>
+					</view>
+					<view class="drop-btn drop-btn-primary" :class="dropButtonClass(canSendAssistant)" @click.stop="onSendAssistantClick">
+						<image class="drop-btn-icon" src="/static/icons/bot-active.svg" mode="aspectFit"></image>
+						<text class="drop-btn-text" :class="nightMode ? 'drop-btn-text-night' : ''">{{ assistantButtonText }}</text>
+					</view>
+				</view>
+			</view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+export default {
+	props: {
+		hasCurrentThreadTarget: { type: Boolean, default: false },
+		previewIsImage: { type: Boolean, default: false },
+		previewIsClipboard: { type: Boolean, default: false },
+		clipboardPreviewText: { type: String, default: '' },
+		previewUrl: { type: String, default: '' },
+		dropInstruction: { type: String, default: '' },
+		dropSendError: { type: String, default: '' },
+		dropMicActive: { type: Boolean, default: false },
+		dropMicButtonText: { type: String, default: '' },
+			canSendCurrent: { type: Boolean, default: false },
+			canSendAssistant: { type: Boolean, default: false },
+			currentButtonText: { type: String, default: '当前会话' },
+			assistantButtonText: { type: String, default: 'AI助手' },
+		voiceTarget: { type: String, default: '' },
+		voicePreviewText: { type: String, default: '' },
+		dialogStyle: { type: String, default: '' },
+		previewStyle: { type: String, default: '' },
+		compact: { type: Boolean, default: false },
+		dialogWidth: { type: Number, default: 0 },
+		dialogHeight: { type: Number, default: 0 },
+		windowWidth: { type: Number, default: 0 },
+		windowHeight: { type: Number, default: 0 },
+		nightMode: { type: Boolean, default: false },
+	},
+	emits: ['cancel', 'noop', 'toggleVoiceRecord', 'sendCurrent', 'sendAssistant', 'instructionInput'],
+	data() {
+		return {
+			instructionDraft: '',
+			lastTouchX: -1,
+			lastTouchY: -1,
+			lastTouchAt: 0,
+			lastHandledAt: 0,
+		}
+	},
+	watch: {
+		'dropInstruction': {
+			handler(newValue: string, _oldValue: string) {
+				if (this.instructionDraft != newValue) this.instructionDraft = newValue
+			},
+			immediate: true,
+		},
+		'instructionDraft': {
+			handler(newValue: string, _oldValue: string) {
+				if (newValue != this.dropInstruction) this.$emit('instructionInput', newValue)
+			},
+		},
+	},
+	methods: {
+		logDropEvent(name: string) {
+			console.log('[vibego-drop-dialog]', name, 'previewUrl=' + this.previewUrl, 'isImage=' + this.previewIsImage.toString(), 'isClipboard=' + this.previewIsClipboard.toString(), 'clipboardLength=' + this.clipboardPreviewText.length.toString())
+		},
+		fileIconSrc(): string {
+			return this.nightMode ? '/static/icons/file-night.svg' : '/static/icons/file.svg'
+		},
+		dialogLeft(): number {
+			const width = this.dialogWidth > 0 ? this.dialogWidth : 560
+			const viewport = this.windowWidth > 0 ? this.windowWidth : width
+			const left = (viewport - width) / 2
+			return left > 0 ? left : 0
+		},
+		dialogTop(): number {
+			const height = this.dialogHeight > 0 ? this.dialogHeight : 520
+			const viewport = this.windowHeight > 0 ? this.windowHeight : height
+			const top = (viewport - height) / 2
+			return top > 0 ? top : 0
+		},
+		isInsideDialog(x: number, y: number): boolean {
+			const left = this.dialogLeft()
+			const top = this.dialogTop()
+			const width = this.dialogWidth > 0 ? this.dialogWidth : 560
+			const height = this.dialogHeight > 0 ? this.dialogHeight : 520
+			return x >= left && x <= left + width && y >= top && y <= top + height
+		},
+		handleOverlayPoint(source: string, x: number, y: number) {
+			const now = Date.now()
+			if (now - this.lastHandledAt < 80) return
+			this.lastHandledAt = now
+			if (this.dropMicActive) {
+				console.log('[vibego-drop-dialog]', 'overlay-voice-active-noop', 'source=' + source)
+				this.$emit('noop')
+				return
+			}
+			const inside = this.isInsideDialog(x, y)
+			console.log('[vibego-drop-dialog]', inside ? 'overlay-inside-noop' : 'overlay-outside-cancel', 'source=' + source, 'x=' + x.toString(), 'y=' + y.toString(), 'left=' + this.dialogLeft().toString(), 'top=' + this.dialogTop().toString(), 'width=' + this.dialogWidth.toString(), 'height=' + this.dialogHeight.toString())
+			if (inside) {
+				this.$emit('noop')
+			} else {
+				this.$emit('cancel')
+			}
+		},
+		onOverlayTouchStart(event: UniTouchEvent) {
+			if (event.touches.length <= 0) return
+			const touch: UniTouch = event.touches[0]
+			this.lastTouchX = touch.clientX
+			this.lastTouchY = touch.clientY
+			this.lastTouchAt = Date.now()
+		},
+		onOverlayTouchEnd(_: UniTouchEvent) {
+			if (this.lastTouchX < 0 || this.lastTouchY < 0) return
+			this.handleOverlayPoint('touchend', this.lastTouchX, this.lastTouchY)
+		},
+		onOverlayClick(_: any) {
+			if (this.lastTouchX < 0 || this.lastTouchY < 0) return
+			if (Date.now() - this.lastTouchAt > 1200) return
+			this.handleOverlayPoint('click', this.lastTouchX, this.lastTouchY)
+		},
+		onDialogClick() {
+			this.logDropEvent('dialog-click')
+		},
+		onDialogTouchEnd() {
+			this.logDropEvent('dialog-touchend')
+		},
+		onPreviewClick() {
+			this.logDropEvent('preview-click')
+		},
+		onVoiceClick() {
+			this.logDropEvent('voice-click')
+			this.$emit('toggleVoiceRecord')
+		},
+		onSendCurrentClick() {
+			this.logDropEvent('send-current-click')
+			this.$emit('sendCurrent')
+		},
+		onSendAssistantClick() {
+			this.logDropEvent('send-assistant-click')
+			this.$emit('sendAssistant')
+		},
+		dropVoiceClass(): string {
+			const classes = new Array<string>()
+			if (this.dropMicActive) classes.push('drop-voice-btn-active')
+			if (this.compact) classes.push('drop-voice-btn-compact')
+			return classes.join(' ')
+		},
+		dropButtonClass(canSend: boolean): string {
+			const classes = new Array<string>()
+			if (this.nightMode) classes.push('drop-btn-night')
+			if (!canSend) classes.push('drop-btn-disabled')
+			if (!canSend && this.nightMode) classes.push('drop-btn-disabled-night')
+			if (this.compact) classes.push('drop-btn-compact')
+			return classes.join(' ')
+		},
+	},
+}
+</script>
+
+<style>
+.drop-source-preview-clipboard {
+	padding: 18px;
+	background-color: #f7f8fb;
+	justify-content: flex-start;
+	align-items: flex-start;
+}
+
+.drop-source-preview-clipboard-label {
+	font-size: 13px;
+	line-height: 18px;
+	color: #6b7280;
+	margin-bottom: 10px;
+}
+
+.drop-source-preview-clipboard-text {
+	font-size: 16px;
+	line-height: 24px;
+	color: #1f2937;
+}
+
+.drop-dialog-mask-night {
+	background-color: rgba(4, 6, 10, 0.78);
+}
+
+.drop-dialog-night {
+	background-color: #1c2230;
+	background-image: linear-gradient(180deg, #252b39 0%, #1c2230 52%, #151a24 100%);
+	border-color: rgba(255, 255, 255, 0.12);
+	box-shadow: 0 30px 70px rgba(0, 0, 0, 0.58);
+}
+
+.drop-source-preview-night {
+	background-color: #151a24;
+	background-image: linear-gradient(180deg, #252b39 0%, #151a24 100%);
+	border-color: rgba(255, 255, 255, 0.10);
+	box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.26), 0 8px 18px rgba(0, 0, 0, 0.24);
+}
+
+.drop-source-preview-night .drop-source-preview-image,
+.drop-source-preview-night .drop-source-preview-file,
+.drop-source-preview-night .drop-source-preview-clipboard {
+	background-color: #151a24;
+}
+
+.drop-dialog-night .drop-source-preview-clipboard-label {
+	color: #aeb6c6;
+}
+
+.drop-dialog-night .drop-source-preview-clipboard-text {
+	color: #f4efe7;
+}
+
+.drop-instruction-input-night {
+	background-color: #151a24;
+	color: #f4efe7;
+	box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.26), 0 10px 22px rgba(0, 0, 0, 0.24);
+}
+
+.drop-btn-night {
+	background-color: #252b39;
+	background-image: linear-gradient(180deg, #30384a 0%, #252b39 100%);
+	border-color: rgba(255, 255, 255, 0.12);
+	box-shadow: 0 8px 16px rgba(0, 0, 0, 0.30);
+}
+
+.drop-btn-disabled-night {
+	background-color: rgba(35, 41, 55, 0.64);
+	background-image: none;
+	border-color: rgba(255, 255, 255, 0.08);
+}
+
+.drop-btn-text-night {
+	color: #f4efe7;
+}
+
+.drop-btn-disabled-night .drop-btn-text-night {
+	color: #7e8798;
+}
+</style>

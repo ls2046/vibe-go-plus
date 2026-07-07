@@ -1,0 +1,561 @@
+<template>
+	<view class="app-page" :style="pageStyle()">
+		<view class="topbar">
+			<view class="brand-mark"><text class="brand-mark-text">F</text></view>
+			<view class="topbar-info">
+				<text class="topbar-title">Files</text>
+				<text class="topbar-subtitle">{{ statusText }}</text>
+			</view>
+			<button class="mini-btn" type="default" @click="loadRoots">刷新</button>
+		</view>
+
+		<view class="panel">
+			<view class="panel-header">
+				<text class="panel-title">Explorer</text>
+				<text class="panel-meta">{{ activeRoot }}</text>
+			</view>
+			<view v-if="nodes.length == 0" class="empty">
+				<text class="empty-text">暂无目录。请确认 server 已启动并配置 roots。</text>
+			</view>
+			<scroll-view class="tree" scroll-y="true">
+				<view v-for="(node, index) in nodes" :key="node.path" class="tree-row" :class="selectedPath == node.path ? 'tree-row-active' : ''" @click="onNodeTap(index)">
+					<text class="tree-indent">{{ indentText(node.level) }}</text>
+					<text class="tree-icon">{{ node.type == 'dir' ? (node.expanded ? '▾' : '▸') : '·' }}</text>
+					<text class="tree-name">{{ node.name }}</text>
+					<text class="tree-type">{{ node.type == 'dir' ? 'dir' : bytes(node.size) }}</text>
+				</view>
+			</scroll-view>
+		</view>
+
+		<view class="panel editor-panel">
+			<view class="panel-header">
+				<text class="panel-title">Preview / Edit</text>
+				<text class="panel-meta">{{ selectedPath.length > 0 ? selectedPath : '选择文件后预览' }}</text>
+			</view>
+			<view v-if="selectedPath.length == 0" class="empty">
+				<text class="empty-text">点击目录展开，点击文件读取内容。支持文本文件预览和保存。</text>
+			</view>
+			<view v-else>
+				<view class="editor-toolbar">
+					<text class="file-state">{{ dirty ? 'modified' : 'saved' }}</text>
+					<button class="small-action" type="default" @click="saveFile">保存</button>
+					<button class="small-action" type="default" @click="sendFileToAi(selectedPath)">AI</button>
+				</view>
+				<textarea class="editor" v-model="fileText" placeholder="文件内容" @input="onEditorInput" />
+			</view>
+		</view>
+
+		<view class="panel inbox-panel">
+			<view class="panel-header">
+				<text class="panel-title">Recent Inbox</text>
+				<text class="panel-meta">{{ records.length }} uploads</text>
+			</view>
+			<view v-if="records.length == 0" class="empty"><text class="empty-text">拖拽文件到 APP 后会显示在这里。</text></view>
+			<view v-for="(item, index) in records" :key="index" class="inbox-row">
+				<view class="row-main">
+					<text class="row-title">{{ item.name }}</text>
+					<text class="path-text">{{ item.path }}</text>
+				</view>
+				<button class="small-action" type="default" @click="openUploadedFile(item.path)">打开</button>
+			</view>
+		</view>
+
+		<view class="bottom-tabs" :style="bottomTabsStyle()">
+			<view class="tab" @click="goHome"><text class="tab-text">工作台</text></view>
+			<view class="tab active"><text class="tab-text">文件</text></view>
+			<view class="tab" @click="goTerminal"><text class="tab-text">终端</text></view>
+			<view class="tab" @click="startAnnotation"><text class="tab-text">标注</text></view>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { getUploadRecords, type UploadRecord } from '../../common/app-state.uts'
+import { readSystemClipboardFirst } from '../../common/system-clipboard.uts'
+import { startAppAnnotation } from '../../common/annotation-launcher.uts'
+import {
+	apiListMobile,
+	apiReadMobile,
+	apiRootsMobile,
+	apiWriteMobile,
+	type FsEntry,
+} from '../../common/mobile-api.uts'
+import type { DropEventInfo } from '../../common/android-drop.uts'
+
+type TreeNode = {
+	path: string
+	name: string
+	type: string
+	size: number
+	level: number
+	expanded: boolean
+	loaded: boolean
+}
+
+export default {
+	data() {
+		return {
+			activeRoot: '',
+			nodes: new Array<TreeNode>(),
+			selectedPath: '',
+			fileText: '',
+			originalText: '',
+			statusText: '正在连接 server...',
+			dirty: false,
+			records: new Array<UploadRecord>(),
+			logs: new Array<string>(),
+			safeBottom: 0,
+		}
+	},
+	onLoad() {
+		this.refreshLayout()
+		this.records = getUploadRecords()
+		this.loadRoots()
+		uni.$on('mobile-upload-added', this.onUploadAdded)
+		uni.$on('mobile-drop-event', this.onDropEvent)
+	},
+	onShow() {
+		this.refreshLayout()
+		readSystemClipboardFirst('pages/files/index')
+	},
+	onResize(_options: OnResizeOptions) {
+		this.refreshLayout()
+	},
+	onUnload() {
+		uni.$off('mobile-upload-added', this.onUploadAdded)
+		uni.$off('mobile-drop-event', this.onDropEvent)
+	},
+	methods: {
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+		},
+		bottomSafeInset(safeAreaBottom: number, windowBottom: number): number {
+			const bottom = safeAreaBottom > windowBottom ? safeAreaBottom : windowBottom
+			return bottom > 0 ? bottom : 0
+		},
+		pageStyle(): string {
+			return 'padding-bottom:' + (86 + this.safeBottom).toString() + 'px;'
+		},
+		bottomTabsStyle(): string {
+			return 'bottom:' + (10 + this.safeBottom).toString() + 'px;'
+		},
+		loadRoots() {
+			this.statusText = '读取 roots...'
+			apiRootsMobile((ok, roots, error) => {
+				if (!ok) {
+					this.statusText = error
+					return
+				}
+				this.nodes = new Array<TreeNode>()
+				for (let index: Int = 0; index < roots.length; index++) {
+					const root = roots[index]
+					this.nodes.push({
+						path: root,
+						name: this.baseName(root),
+						type: 'dir',
+						size: 0,
+						level: 0,
+						expanded: false,
+						loaded: false,
+					})
+				}
+				if (roots.length > 0) {
+					this.activeRoot = roots[0]
+					this.expandDir(0)
+				}
+				this.statusText = roots.length.toString() + ' roots'
+			})
+		},
+		onNodeTap(index: number) {
+			const nodeIndex: Int = index.toInt()
+			if (nodeIndex < 0 || nodeIndex >= this.nodes.length) return
+			const node = this.nodes[nodeIndex]
+			if (node.type == 'dir') {
+				this.expandDir(nodeIndex)
+			} else {
+				this.openFile(node.path)
+			}
+		},
+		expandDir(index: Int) {
+			const node = this.nodes[index]
+			if (node.expanded) {
+				this.collapseDir(index)
+				return
+			}
+			this.statusText = '读取 ' + node.path
+			apiListMobile(node.path, (ok, entries, error) => {
+				if (!ok) {
+					this.statusText = error
+					return
+				}
+				const children = new Array<TreeNode>()
+				for (let entryIndex: Int = 0; entryIndex < entries.length; entryIndex++) {
+					const entry = entries[entryIndex]
+					children.push(this.entryToNode(node.path, entry, node.level + 1))
+				}
+				const next = new Array<TreeNode>()
+				for (let before: Int = 0; before <= index; before++) {
+					const item = this.nodes[before]
+					if (before == index) {
+						item.expanded = true
+						item.loaded = true
+					}
+					next.push(item)
+				}
+				for (let childIndex: Int = 0; childIndex < children.length; childIndex++) {
+					next.push(children[childIndex])
+				}
+				const afterStart: Int = (index + 1).toInt()
+				for (let after: Int = afterStart; after < this.nodes.length; after++) {
+					next.push(this.nodes[after])
+				}
+				this.nodes = next
+				this.activeRoot = this.rootForPath(node.path)
+				this.statusText = children.length.toString() + ' items'
+			})
+		},
+		collapseDir(index: Int) {
+			const node = this.nodes[index]
+			const next = new Array<TreeNode>()
+			for (let i: Int = 0; i <= index; i++) {
+				const item = this.nodes[i]
+				if (i == index) item.expanded = false
+				next.push(item)
+			}
+			const afterStart: Int = (index + 1).toInt()
+			for (let i: Int = afterStart; i < this.nodes.length; i++) {
+				const item = this.nodes[i]
+				if (item.level <= node.level) {
+					next.push(item)
+				}
+			}
+			this.nodes = next
+			this.statusText = '已收起 ' + node.name
+		},
+		openFile(path: string) {
+			this.selectedPath = path
+			this.statusText = '读取文件...'
+			apiReadMobile(path, (ok, result, error) => {
+				if (!ok || result == null) {
+					this.statusText = error
+					this.fileText = ''
+					this.originalText = ''
+					this.dirty = false
+					return
+				}
+				this.selectedPath = result.path
+				this.fileText = result.text
+				this.originalText = result.text
+				this.dirty = false
+				this.statusText = '已打开 ' + this.baseName(result.path)
+			})
+		},
+		saveFile() {
+			if (this.selectedPath.length == 0) return
+			this.statusText = '保存中...'
+			apiWriteMobile(this.selectedPath, this.fileText, (ok, error) => {
+				if (ok) {
+					this.originalText = this.fileText
+					this.dirty = false
+					this.statusText = '已保存 ' + this.baseName(this.selectedPath)
+					uni.showToast({ title: '已保存', icon: 'success' })
+				} else {
+					this.statusText = error
+					uni.showToast({ title: error, icon: 'none' })
+				}
+			})
+		},
+		onEditorInput() {
+			this.dirty = this.fileText != this.originalText
+		},
+		openUploadedFile(path: string) {
+			this.openFile(path)
+		},
+		onUploadAdded(record: UploadRecord) {
+			this.records.unshift(record)
+			this.pushLog('uploaded: ' + record.path)
+		},
+		onDropEvent(event: DropEventInfo) {
+			this.pushLog(event.action + ': ' + event.message)
+		},
+		pushLog(text: string) {
+			const now = new Date().toLocaleTimeString()
+			this.logs.unshift('[' + now + '] ' + text)
+			while (this.logs.length > 20) this.logs.pop()
+		},
+		sendFileToAi(path: string) {
+			uni.navigateTo({
+				url: '/pages/terminal/index?prompt=' + encodeURIComponent('请分析并修改这个文件：' + path),
+			})
+		},
+		entryToNode(parent: string, entry: FsEntry, level: number): TreeNode {
+			return {
+				path: this.joinPath(parent, entry.name),
+				name: entry.name,
+				type: entry.type,
+				size: entry.size,
+				level,
+				expanded: false,
+				loaded: false,
+			}
+		},
+		joinPath(parent: string, name: string): string {
+			if (parent.endsWith('/')) return parent + name
+			return parent + '/' + name
+		},
+		baseName(path: string): string {
+			let value = path
+			while (value.endsWith('/') && value.length > 1) {
+				value = value.substring(0, value.length - 1)
+			}
+			const index = value.lastIndexOf('/')
+			if (index < 0) return value
+			return value.substring(index + 1)
+		},
+		rootForPath(path: string): string {
+			for (let index: Int = 0; index < this.nodes.length; index++) {
+				const node = this.nodes[index]
+				if (node.level == 0 && path.startsWith(node.path)) return node.path
+			}
+			return this.activeRoot
+		},
+		indentText(level: number): string {
+			let text = ''
+			for (let index: Int = 0; index < level; index++) {
+				text = text + '  '
+			}
+			return text
+		},
+		bytes(size: number): string {
+			if (size < 1024) return size.toString() + 'B'
+			const kb = size / 1024
+			if (kb < 1024) return kb.toFixed(1) + 'K'
+			return (kb / 1024).toFixed(1) + 'M'
+		},
+		goHome() {
+			uni.reLaunch({ url: '/pages/index/index' })
+		},
+		goTerminal() {
+			uni.reLaunch({ url: '/pages/terminal/index' })
+		},
+		goWeb() {
+			uni.reLaunch({ url: '/pages/web/index' })
+		},
+		startAnnotation() {
+			startAppAnnotation('pages/files/index', '文件')
+		},
+	},
+}
+</script>
+
+<style>
+	.app-page {
+		min-height: 1000px;
+		padding: 10px 10px 86px;
+		background-color: #f8fafc;
+	}
+
+	.topbar,
+	.panel,
+	.bottom-tabs {
+		border-width: 1px;
+		border-color: #e2e8f0;
+		border-style: solid;
+		background-color: #ffffff;
+	}
+
+	.topbar {
+		height: 56px;
+		padding: 8px 10px;
+		border-radius: 10px;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.brand-mark {
+		width: 34px;
+		height: 34px;
+		border-radius: 9px;
+		align-items: center;
+		justify-content: center;
+		background-color: #2563eb;
+	}
+
+	.brand-mark-text {
+		color: #ffffff;
+		font-size: 16px;
+		font-weight: 700;
+	}
+
+	.topbar-info {
+		margin-left: 10px;
+		flex: 1;
+	}
+
+	.topbar-title,
+	.panel-title,
+	.row-title,
+	.tree-name {
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.topbar-title {
+		font-size: 16px;
+	}
+
+	.panel-title {
+		font-size: 15px;
+	}
+
+	.topbar-subtitle,
+	.panel-meta,
+	.path-text,
+	.empty-text,
+	.tree-type,
+	.file-state {
+		font-size: 12px;
+		color: #64748b;
+	}
+
+	.mini-btn,
+	.small-action {
+		border-radius: 8px;
+		font-size: 12px;
+		color: #1d4ed8;
+		background-color: #dbeafe;
+	}
+
+	.panel {
+		margin-top: 10px;
+		padding: 10px;
+		border-radius: 10px;
+	}
+
+	.panel-header {
+		margin-bottom: 8px;
+	}
+
+	.tree {
+		height: 310px;
+		border-radius: 8px;
+		background-color: #f8fafc;
+	}
+
+	.tree-row {
+		min-height: 38px;
+		padding: 8px 8px;
+		flex-direction: row;
+		align-items: center;
+		border-bottom-width: 1px;
+		border-bottom-color: #e2e8f0;
+		border-bottom-style: solid;
+	}
+
+	.tree-row-active {
+		background-color: #dbeafe;
+	}
+
+	.tree-indent {
+		font-size: 12px;
+		color: #94a3b8;
+	}
+
+	.tree-icon {
+		width: 18px;
+		font-size: 13px;
+		color: #2563eb;
+	}
+
+	.tree-name {
+		flex: 1;
+		font-size: 13px;
+	}
+
+	.tree-type {
+		margin-left: 8px;
+	}
+
+	.editor-toolbar {
+		margin-bottom: 8px;
+		flex-direction: row;
+		align-items: center;
+	}
+
+	.file-state {
+		flex: 1;
+	}
+
+	.editor {
+		height: 280px;
+		padding: 10px;
+		border-radius: 8px;
+		background-color: #0f172a;
+		color: #e5e7eb;
+		font-size: 12px;
+		line-height: 18px;
+	}
+
+	.empty {
+		padding: 14px;
+		border-radius: 8px;
+		background-color: #f1f5f9;
+	}
+
+	.inbox-panel {
+		margin-bottom: 6px;
+	}
+
+	.inbox-row {
+		min-height: 54px;
+		padding: 8px 4px;
+		flex-direction: row;
+		align-items: center;
+		border-top-width: 1px;
+		border-top-color: #e2e8f0;
+		border-top-style: solid;
+	}
+
+	.row-main {
+		flex: 1;
+	}
+
+	.row-title {
+		font-size: 13px;
+	}
+
+	.path-text {
+		margin-top: 3px;
+	}
+
+	.bottom-tabs {
+		position: fixed;
+		left: 10px;
+		right: 10px;
+		bottom: 10px;
+		height: 54px;
+		padding: 6px;
+		border-radius: 14px;
+		flex-direction: row;
+	}
+
+	.tab {
+		flex: 1;
+		align-items: center;
+		justify-content: center;
+		border-radius: 9px;
+	}
+
+	.tab.active {
+		background-color: #dbeafe;
+	}
+
+	.tab-text {
+		font-size: 12px;
+		font-weight: 700;
+		color: #64748b;
+	}
+</style>

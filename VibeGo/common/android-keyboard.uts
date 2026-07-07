@@ -1,0 +1,500 @@
+// #ifdef APP-ANDROID
+import InputDevice from 'android.view.InputDevice'
+import KeyEvent from 'android.view.KeyEvent'
+// #endif
+
+const KEYBOARD_MAPPINGS_KEY = 'vibego.keyboardMappings'
+const KEYBOARD_LAST_EVENT_KEY = 'vibego.keyboardLastEvent'
+const KEYBOARD_LEARNING_KEY = 'vibego.keyboardLearning'
+
+export type KeyboardDeviceInfo = {
+	id: number
+	name: string
+	descriptor: string
+	keyboardType: number
+	external: boolean
+	sources: number
+}
+
+export type KeyboardKeyEventInfo = {
+	deviceId: number
+	deviceName: string
+	descriptor: string
+	keyCode: number
+	scanCode: number
+	keyName: string
+	action: string
+	repeatCount: number
+	eventTime: number
+	createdAt: string
+}
+
+export type KeyboardMapping = {
+	action: string
+	label: string
+	deviceName: string
+	descriptor: string
+	keyCode: number
+	scanCode: number
+	keyName: string
+	updatedAt: string
+}
+
+export type KeyboardEventResolution = {
+	consume: boolean
+	action: string
+	phase: string
+	trigger: string
+	key: KeyboardKeyEventInfo
+	mapping: KeyboardMapping | null
+}
+
+type KeyboardLearningState = {
+	action: string
+	label: string
+	updatedAt: string
+}
+
+let learningAction = ''
+let learningLabel = ''
+let primarySendHandler: (() => void) | null = null
+let primaryDeleteHandler: (() => void) | null = null
+let primaryClearHandler: (() => void) | null = null
+
+function boolText(value: boolean): string {
+	return value ? '1' : '0'
+}
+
+export function keyboardDebugLog(stage: string, message: string): void {
+	console.log('[vibego-keyboard]', stage, message)
+}
+
+export function keyboardKeyDebugText(key: KeyboardKeyEventInfo): string {
+	return 'deviceId=' + key.deviceId.toString()
+		+ ' deviceName=' + key.deviceName
+		+ ' keyCode=' + key.keyCode.toString()
+		+ ' scanCode=' + key.scanCode.toString()
+		+ ' keyName=' + key.keyName
+		+ ' action=' + key.action
+		+ ' repeat=' + key.repeatCount.toString()
+}
+
+function keyboardMappingDebugText(mapping: KeyboardMapping | null): string {
+	if (mapping == null) return 'mapping=<none>'
+	return 'mappingAction=' + mapping.action
+		+ ' mappingLabel=' + mapping.label
+		+ ' mappingKeyCode=' + mapping.keyCode.toString()
+		+ ' mappingScanCode=' + mapping.scanCode.toString()
+		+ ' mappingKeyName=' + mapping.keyName
+}
+
+export function keyboardResolutionDebugText(result: KeyboardEventResolution): string {
+	return 'consume=' + boolText(result.consume)
+		+ ' action=' + result.action
+		+ ' phase=' + result.phase
+		+ ' trigger=' + result.trigger
+		+ ' ' + keyboardKeyDebugText(result.key)
+		+ ' ' + keyboardMappingDebugText(result.mapping)
+}
+
+function emptyKeyEventInfo(): KeyboardKeyEventInfo {
+	return {
+		deviceId: -1,
+		deviceName: '',
+		descriptor: '',
+		keyCode: 0,
+		scanCode: 0,
+		keyName: '',
+		action: '',
+		repeatCount: 0,
+		eventTime: 0,
+		createdAt: '',
+	}
+}
+
+function emptyMapping(): KeyboardMapping {
+	return {
+		action: '',
+		label: '',
+		deviceName: '',
+		descriptor: '',
+		keyCode: 0,
+		scanCode: 0,
+		keyName: '',
+		updatedAt: '',
+	}
+}
+
+function toKeyboardMapping(item: UTSJSONObject): KeyboardMapping {
+	return {
+		action: item.getString('action') ?? '',
+		label: item.getString('label') ?? '',
+		deviceName: item.getString('deviceName') ?? '',
+		descriptor: item.getString('descriptor') ?? '',
+		keyCode: item.getNumber('keyCode') ?? 0,
+		scanCode: item.getNumber('scanCode') ?? 0,
+		keyName: item.getString('keyName') ?? '',
+		updatedAt: item.getString('updatedAt') ?? '',
+	}
+}
+
+function toKeyboardKeyEventInfo(item: UTSJSONObject): KeyboardKeyEventInfo {
+	return {
+		deviceId: item.getNumber('deviceId') ?? -1,
+		deviceName: item.getString('deviceName') ?? '',
+		descriptor: item.getString('descriptor') ?? '',
+		keyCode: item.getNumber('keyCode') ?? 0,
+		scanCode: item.getNumber('scanCode') ?? 0,
+		keyName: item.getString('keyName') ?? '',
+		action: item.getString('action') ?? '',
+		repeatCount: item.getNumber('repeatCount') ?? 0,
+		eventTime: item.getNumber('eventTime') ?? 0,
+		createdAt: item.getString('createdAt') ?? '',
+	}
+}
+
+function saveKeyboardMappings(mappings: Array<KeyboardMapping>): void {
+	uni.setStorageSync(KEYBOARD_MAPPINGS_KEY, JSON.stringify(mappings))
+	keyboardDebugLog('mappings-save', 'count=' + mappings.length.toString())
+	uni.$emit('vibego-keyboard-mapping-changed', mappings)
+}
+
+function mappingMatchesKey(mapping: KeyboardMapping, key: KeyboardKeyEventInfo): boolean {
+	if (mapping.keyCode != key.keyCode) return false
+	if (mapping.scanCode > 0 && key.scanCode > 0 && mapping.scanCode != key.scanCode) return false
+	if (mapping.descriptor.length > 0 && key.descriptor.length > 0) return mapping.descriptor == key.descriptor
+	if (mapping.deviceName.length > 0 && key.deviceName.length > 0) return mapping.deviceName == key.deviceName
+	return true
+}
+
+function findMappingForKey(key: KeyboardKeyEventInfo): KeyboardMapping | null {
+	const mappings = getKeyboardMappings()
+	for (let index: Int = 0; index < mappings.length; index++) {
+		const mapping = mappings[index]
+		if (mappingMatchesKey(mapping, key)) return mapping
+	}
+	return null
+}
+
+function saveLastKeyboardEvent(key: KeyboardKeyEventInfo): void {
+	uni.setStorageSync(KEYBOARD_LAST_EVENT_KEY, JSON.stringify(key))
+	uni.$emit('vibego-keyboard-event', key)
+}
+
+function emptyLearningState(): KeyboardLearningState {
+	return {
+		action: '',
+		label: '',
+		updatedAt: '',
+	}
+}
+
+function readKeyboardLearningState(): KeyboardLearningState {
+	const raw = uni.getStorageSync(KEYBOARD_LEARNING_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		const state = emptyLearningState()
+		state.action = learningAction
+		state.label = learningLabel
+		return state
+	}
+	try {
+		const item = JSON.parse(raw) as UTSJSONObject
+		const state: KeyboardLearningState = {
+			action: item.getString('action') ?? '',
+			label: item.getString('label') ?? '',
+			updatedAt: item.getString('updatedAt') ?? '',
+		}
+		learningAction = state.action
+		learningLabel = state.label
+		return state
+	} catch (_) {
+		return emptyLearningState()
+	}
+}
+
+function writeKeyboardLearningState(action: string, label: string): void {
+	learningAction = action
+	learningLabel = label
+	if (action.length == 0) {
+		uni.removeStorageSync(KEYBOARD_LEARNING_KEY)
+	} else {
+		const state: KeyboardLearningState = {
+			action,
+			label,
+			updatedAt: new Date().toISOString(),
+		}
+		uni.setStorageSync(KEYBOARD_LEARNING_KEY, JSON.stringify(state))
+	}
+	uni.$emit('vibego-keyboard-learning', action)
+}
+
+function keyEventPhase(action: number): string {
+	// #ifdef APP-ANDROID
+	if (action == KeyEvent.ACTION_DOWN) return 'down'
+	if (action == KeyEvent.ACTION_UP) return 'up'
+	// #endif
+	return 'other'
+}
+
+function keyActionName(action: number): string {
+	// #ifdef APP-ANDROID
+	if (action == KeyEvent.ACTION_DOWN) return 'ACTION_DOWN'
+	if (action == KeyEvent.ACTION_UP) return 'ACTION_UP'
+	if (action == KeyEvent.ACTION_MULTIPLE) return 'ACTION_MULTIPLE'
+	// #endif
+	return action.toString()
+}
+
+export function keyboardActionLabel(action: string): string {
+	if (action == 'global-record') return '全局录音'
+	if (action == 'send') return '主发送按钮'
+	if (action == 'cancel') return '返回/取消'
+	if (action == 'noop') return '清空输入框'
+	if (action == 'delete') return '删除'
+	return action
+}
+
+export function registerKeyboardPrimarySendHandler(handler: () => void): void {
+	primarySendHandler = handler
+	keyboardDebugLog('primary-send-handler', 'registered')
+}
+
+export function clearKeyboardPrimarySendHandler(): void {
+	primarySendHandler = null
+	keyboardDebugLog('primary-send-handler', 'cleared')
+}
+
+export function dispatchKeyboardPrimarySend(): boolean {
+	if (primarySendHandler == null) {
+		keyboardDebugLog('primary-send-dispatch', 'handler=<none>')
+		return false
+	}
+	keyboardDebugLog('primary-send-dispatch', 'handler=present')
+	primarySendHandler!()
+	return true
+}
+
+export function registerKeyboardPrimaryDeleteHandler(handler: () => void): void {
+	primaryDeleteHandler = handler
+	keyboardDebugLog('primary-delete-handler', 'registered')
+}
+
+export function clearKeyboardPrimaryDeleteHandler(): void {
+	primaryDeleteHandler = null
+	keyboardDebugLog('primary-delete-handler', 'cleared')
+}
+
+export function dispatchKeyboardPrimaryDelete(): boolean {
+	if (primaryDeleteHandler == null) {
+		keyboardDebugLog('primary-delete-dispatch', 'handler=<none>')
+		return false
+	}
+	keyboardDebugLog('primary-delete-dispatch', 'handler=present')
+	primaryDeleteHandler!()
+	return true
+}
+
+export function registerKeyboardPrimaryClearHandler(handler: () => void): void {
+	primaryClearHandler = handler
+	keyboardDebugLog('primary-clear-handler', 'registered')
+}
+
+export function clearKeyboardPrimaryClearHandler(): void {
+	primaryClearHandler = null
+	keyboardDebugLog('primary-clear-handler', 'cleared')
+}
+
+export function dispatchKeyboardPrimaryClear(): boolean {
+	if (primaryClearHandler == null) {
+		keyboardDebugLog('primary-clear-dispatch', 'handler=<none>')
+		return false
+	}
+	keyboardDebugLog('primary-clear-dispatch', 'handler=present')
+	primaryClearHandler!()
+	return true
+}
+
+export function getKeyboardMappings(): Array<KeyboardMapping> {
+	const raw = uni.getStorageSync(KEYBOARD_MAPPINGS_KEY)
+	const mappings = new Array<KeyboardMapping>()
+	if (typeof raw != 'string' || raw.length == 0) return mappings
+	try {
+		const parsed = JSON.parse(raw) as Array<any>
+		for (let index: Int = 0; index < parsed.length; index++) {
+			const item = parsed[index] as UTSJSONObject
+			const mapping = toKeyboardMapping(item)
+			if (mapping.action.length > 0 && mapping.keyCode > 0) mappings.push(mapping)
+		}
+	} catch (_) {}
+	return mappings
+}
+
+export function getKeyboardMapping(action: string): KeyboardMapping | null {
+	const mappings = getKeyboardMappings()
+	for (let index: Int = 0; index < mappings.length; index++) {
+		if (mappings[index].action == action) return mappings[index]
+	}
+	return null
+}
+
+export function removeKeyboardMapping(action: string): void {
+	const mappings = getKeyboardMappings()
+	const next = new Array<KeyboardMapping>()
+	for (let index: Int = 0; index < mappings.length; index++) {
+		if (mappings[index].action != action) next.push(mappings[index])
+	}
+	saveKeyboardMappings(next)
+}
+
+export function clearKeyboardMappings(): void {
+	uni.removeStorageSync(KEYBOARD_MAPPINGS_KEY)
+	uni.$emit('vibego-keyboard-mapping-changed', new Array<KeyboardMapping>())
+}
+
+export function startKeyboardLearning(action: string, label: string): void {
+	keyboardDebugLog('learning-start', 'action=' + action + ' label=' + label)
+	writeKeyboardLearningState(action, label.length > 0 ? label : keyboardActionLabel(action))
+}
+
+export function cancelKeyboardLearning(): void {
+	keyboardDebugLog('learning-cancel', 'action=' + learningAction)
+	writeKeyboardLearningState('', '')
+}
+
+export function getKeyboardLearningAction(): string {
+	return readKeyboardLearningState().action
+}
+
+export function getKeyboardLearningLabel(): string {
+	const state = readKeyboardLearningState()
+	return state.label.length > 0 ? state.label : keyboardActionLabel(state.action)
+}
+
+export function getLastKeyboardEvent(): KeyboardKeyEventInfo | null {
+	const raw = uni.getStorageSync(KEYBOARD_LAST_EVENT_KEY)
+	if (typeof raw != 'string' || raw.length == 0) return null
+	try {
+		return toKeyboardKeyEventInfo(JSON.parse(raw) as UTSJSONObject)
+	} catch (_) {
+		return null
+	}
+}
+
+export function listKeyboardDevices(): Array<KeyboardDeviceInfo> {
+	const devices = new Array<KeyboardDeviceInfo>()
+	// #ifdef APP-ANDROID
+	const ids = InputDevice.getDeviceIds()
+	for (let index: Int = 0; index < ids.size; index++) {
+		const device = InputDevice.getDevice(ids[index])
+		if (device == null) continue
+		const sources = device.getSources()
+		const keyboardType = device.getKeyboardType()
+		const isKeyboard = ((sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD) || keyboardType != InputDevice.KEYBOARD_TYPE_NONE
+		if (!isKeyboard) continue
+		devices.push({
+			id: device.getId(),
+			name: device.getName(),
+			descriptor: device.getDescriptor(),
+			keyboardType,
+			external: device.isExternal(),
+			sources,
+		})
+	}
+	// #endif
+	return devices
+}
+
+export function eventInfoFromKeyEvent(event: KeyEvent): KeyboardKeyEventInfo {
+	// #ifdef APP-ANDROID
+	const deviceId = event.getDeviceId()
+	const device = InputDevice.getDevice(deviceId)
+	const deviceName = device == null ? '' : device.getName()
+	const descriptor = device == null ? '' : device.getDescriptor()
+	const keyCode = event.getKeyCode()
+	return {
+		deviceId,
+		deviceName,
+		descriptor,
+		keyCode,
+		scanCode: event.getScanCode(),
+		keyName: KeyEvent.keyCodeToString(keyCode),
+		action: keyActionName(event.getAction()),
+		repeatCount: event.getRepeatCount(),
+		eventTime: event.getEventTime(),
+		createdAt: new Date().toISOString(),
+	}
+	// #endif
+	return emptyKeyEventInfo()
+}
+
+export function saveKeyboardMappingFromEvent(action: string, label: string, key: KeyboardKeyEventInfo): KeyboardMapping {
+	const mappings = getKeyboardMappings()
+	const next = new Array<KeyboardMapping>()
+	for (let index: Int = 0; index < mappings.length; index++) {
+		if (mappings[index].action != action) next.push(mappings[index])
+	}
+	const mapping: KeyboardMapping = {
+		action,
+		label: label.length > 0 ? label : keyboardActionLabel(action),
+		deviceName: key.deviceName,
+		descriptor: key.descriptor,
+		keyCode: key.keyCode,
+		scanCode: key.scanCode,
+		keyName: key.keyName,
+		updatedAt: new Date().toISOString(),
+	}
+	next.push(mapping)
+	keyboardDebugLog('mapping-learned', 'action=' + action + ' label=' + mapping.label + ' ' + keyboardKeyDebugText(key))
+	saveKeyboardMappings(next)
+	return mapping
+}
+
+export function resolveVibeKeyboardEvent(event: KeyEvent): KeyboardEventResolution {
+	const key = eventInfoFromKeyEvent(event)
+	saveLastKeyboardEvent(key)
+	const phase = keyEventPhase(event.getAction())
+	keyboardDebugLog('resolve-key', 'phase=' + phase + ' ' + keyboardKeyDebugText(key))
+	if (phase != 'down' && phase != 'up') {
+		keyboardDebugLog('resolve-ignore', 'unsupported-phase ' + keyboardKeyDebugText(key))
+		return { consume: false, action: '', phase, trigger: '', key, mapping: null }
+	}
+	const learning = readKeyboardLearningState()
+	if (learning.action.length > 0 && phase == 'down' && key.repeatCount == 0) {
+		const mapping = saveKeyboardMappingFromEvent(learning.action, learning.label, key)
+		cancelKeyboardLearning()
+		keyboardDebugLog('resolve-learned', 'action=' + mapping.action + ' ' + keyboardKeyDebugText(key))
+		return {
+			consume: true,
+			action: 'learned',
+			phase,
+			trigger: 'keyboard:learned:' + mapping.action,
+			key,
+			mapping,
+		}
+	}
+	if (learning.action.length > 0) {
+		keyboardDebugLog('resolve-learning-consume', 'action=' + learning.action + ' phase=' + phase)
+		return { consume: true, action: 'learning', phase, trigger: 'keyboard:learning', key, mapping: null }
+	}
+	const mapping = findMappingForKey(key)
+	if (mapping == null) {
+		keyboardDebugLog('resolve-miss', keyboardKeyDebugText(key))
+		return { consume: false, action: '', phase, trigger: '', key, mapping: null }
+	}
+	keyboardDebugLog('resolve-match', 'action=' + mapping.action + ' phase=' + phase + ' ' + keyboardMappingDebugText(mapping) + ' ' + keyboardKeyDebugText(key))
+	return {
+		consume: true,
+		action: mapping.action,
+		phase,
+		trigger: 'keyboard:' + mapping.action + ':' + key.keyCode.toString() + ':' + key.scanCode.toString(),
+		key,
+		mapping,
+	}
+}
+
+export function emptyKeyboardMappingForAction(action: string): KeyboardMapping {
+	const mapping = emptyMapping()
+	mapping.action = action
+	mapping.label = keyboardActionLabel(action)
+	return mapping
+}

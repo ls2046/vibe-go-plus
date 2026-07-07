@@ -1,0 +1,70 @@
+export type ProbeStatus = {
+	notificationGranted: boolean
+	exactAlarmGranted: boolean
+	heartbeatActive: boolean
+	playbackActive: boolean
+	lastHeartbeatAt: string
+	lastHeartbeatStatus: string
+	lastAlarmAt: string
+	lastLocalNotificationAt: string
+	lastLocalNotificationTitle: string
+	lastLocalNotificationText: string
+	logs: Array<string>
+}
+
+export type ProbeActionResult = {
+	ok: boolean
+	message: string
+	status: ProbeStatus
+}
+
+export type ProjectionStatus = {
+	captureSupported: boolean
+	capturePermissionRequested: boolean
+	projectionAuthorized: boolean
+	projectionActive: boolean
+	lastPath: string
+	lastWidth: number
+	lastHeight: number
+	lastTimestamp: string
+	lastError: string
+	message: string
+}
+
+export type ProjectionActionResult = {
+	ok: boolean
+	message: string
+	status: ProjectionStatus
+}
+
+export type ScreenCaptureFrameResult = {
+	ok: boolean
+	path: string
+	width: number
+	height: number
+	timestamp: string
+	error: string
+	status: ProjectionStatus
+}
+
+export type ProbeStatusCallback = (result: ProbeStatus) => void
+export type ProbeActionCallback = (result: ProbeActionResult) => void
+export type ProjectionStatusCallback = (result: ProjectionStatus) => void
+export type ProjectionActionCallback = (result: ProjectionActionResult) => void
+export type ScreenCaptureFrameCallback = (result: ScreenCaptureFrameResult) => void
+
+export type RequestProbePermissions = (done: ProbeActionCallback) => void
+export type OpenExactAlarmSettings = () => void
+export type StartHeartbeat = (intervalSec: Int, serverUrl: string, done: ProbeActionCallback) => void
+export type StopHeartbeat = (done: ProbeActionCallback) => void
+export type ScheduleAlarm = (delaySec: Int, done: ProbeActionCallback) => void
+export type CancelAlarm = (done: ProbeActionCallback) => void
+export type StopPlayback = (done: ProbeActionCallback) => void
+export type ShowLocalNotification = (title: string, text: string, done: ProbeActionCallback) => void
+export type ScheduleLocalNotification = (delaySec: Int, title: string, text: string, done: ProbeActionCallback) => void
+export type CancelLocalNotification = (done: ProbeActionCallback) => void
+export type GetProbeStatus = (done: ProbeStatusCallback) => void
+export type RequestProjectionConsent = (done: ProjectionActionCallback) => void
+export type GetProjectionStatus = (done: ProjectionStatusCallback) => void
+export type CaptureProjectionFrame = (done: ScreenCaptureFrameCallback) => void
+export type StopProjectionSession = (done: ProjectionActionCallback) => void

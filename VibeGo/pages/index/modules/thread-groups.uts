@@ -1,0 +1,7 @@
+import { type CodexThread } from './index-types.uts'
+
+export function displayThreadTitle(thread: CodexThread): string {
+	if (thread.title.length > 0) return thread.title
+	if (thread.preview.length > 0) return thread.preview
+	return '未命名会话'
+}

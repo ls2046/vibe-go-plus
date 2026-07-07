@@ -1,0 +1,150 @@
+// #ifdef APP-ANDROID
+import Intent from 'android.content.Intent'
+import Settings from 'android.provider.Settings'
+// #endif
+
+export type AutomationRunner = {
+	packageName: string
+	label: string
+	installed: boolean
+}
+
+export type AutomationTaskResult = {
+	ok: boolean
+	message: string
+	response: string
+}
+
+const AUTOJS_ENDPOINT_KEY = 'vibego.autojsEndpoint'
+export const DEFAULT_AUTOJS_ENDPOINT = 'http://127.0.0.1:9317/run'
+
+function runnerCandidates(): Array<AutomationRunner> {
+	const runners = new Array<AutomationRunner>()
+	runners.push({ packageName: 'org.autojs.autojs', label: 'AutoJS', installed: false })
+	runners.push({ packageName: 'org.autojs.autoxjs', label: 'AutoX.js', installed: false })
+	runners.push({ packageName: 'com.stardust.autojs', label: 'Auto.js Classic', installed: false })
+	runners.push({ packageName: 'com.stardust.autojs.inrt', label: 'Auto.js Runtime', installed: false })
+	runners.push({ packageName: 'org.autojs.autojspro', label: 'AutoJS Pro', installed: false })
+	runners.push({ packageName: 'com.hamibot.hamibot', label: 'Hamibot', installed: false })
+	return runners
+}
+
+export function getAutomationEndpoint(): string {
+	const value = uni.getStorageSync(AUTOJS_ENDPOINT_KEY)
+	if (typeof value == 'string' && value.length > 0) return value
+	return DEFAULT_AUTOJS_ENDPOINT
+}
+
+export function setAutomationEndpoint(endpoint: string): void {
+	const value = endpoint.trim()
+	uni.setStorageSync(AUTOJS_ENDPOINT_KEY, value.length > 0 ? value : DEFAULT_AUTOJS_ENDPOINT)
+}
+
+export function detectInstalledRunners(done: (runners: Array<AutomationRunner>) => void): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	const runners = runnerCandidates()
+	if (activity == null) {
+		done(runners)
+		return
+	}
+	const pm = activity.getPackageManager()
+	for (let index: Int = 0; index < runners.length; index++) {
+		const item = runners[index]
+		item.installed = pm.getLaunchIntentForPackage(item.packageName) != null
+		runners[index] = item
+	}
+	done(runners)
+	// #endif
+}
+
+export function openAccessibilitySettings(): boolean {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	try {
+		const intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-automation]', 'open accessibility failed', error)
+		return false
+	}
+	// #endif
+	return false
+}
+
+export function openAutomationRunner(packageName: string): boolean {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null || packageName.length == 0) return false
+	try {
+		const intent = activity.getPackageManager().getLaunchIntentForPackage(packageName)
+		if (intent == null) return false
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-automation]', 'open runner failed', error)
+		return false
+	}
+	// #endif
+	return false
+}
+
+function safeJsonParams(paramsText: string): string {
+	const value = paramsText.trim()
+	if (value.length == 0) return '{}'
+	if (value.startsWith('{') || value.startsWith('[')) return value
+	return '{"text":' + JSON.stringify(value) + '}'
+}
+
+function makeTaskBody(action: string, paramsText: string, callbackUrl: string): string {
+	const id = new Date().getTime().toString() + '-' + Math.floor(Math.random() * 10000).toString()
+	return '{' +
+		'"id":' + JSON.stringify(id) + ',' +
+		'"action":' + JSON.stringify(action.length > 0 ? action : 'ping') + ',' +
+		'"params":' + safeJsonParams(paramsText) + ',' +
+		'"callbackUrl":' + JSON.stringify(callbackUrl) +
+	'}'
+}
+
+export function sendAutomationTask(endpoint: string, action: string, paramsText: string, callbackUrl: string, done: (result: AutomationTaskResult) => void): void {
+	const url = endpoint.trim().length > 0 ? endpoint.trim() : DEFAULT_AUTOJS_ENDPOINT
+	const body = makeTaskBody(action, paramsText, callbackUrl)
+	uni.request({
+		url,
+		method: 'POST',
+		header: {
+			'Content-Type': 'application/json',
+		},
+		data: body,
+		timeout: 6000,
+		success: (res) => {
+			let responseText = ''
+			try {
+				if (typeof res.data == 'string') {
+					responseText = res.data as string
+				} else {
+					const jsonText = JSON.stringify(res.data)
+					responseText = jsonText == null ? '' : jsonText
+				}
+			} catch (_) {
+				responseText = 'response stringify failed'
+			}
+			done({
+				ok: res.statusCode >= 200 && res.statusCode < 300,
+				message: 'HTTP ' + res.statusCode.toString(),
+				response: responseText,
+			})
+		},
+		fail: (err) => {
+			done({
+				ok: false,
+				message: err.errMsg,
+				response: '',
+			})
+		},
+	})
+}

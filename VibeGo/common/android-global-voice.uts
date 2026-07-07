@@ -1,0 +1,994 @@
+import { getAsrMode, setPendingGlobalVoiceText } from './app-state.uts'
+import { requestRecordAudioPermission, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording } from './android-voice-record.uts'
+import { transcribeMobileAudio } from './mobile-api.uts'
+import { claimVoiceSession, releaseVoiceSession, activeVoiceSessionOwner } from './voice-session-lock.uts'
+import { dispatchKeyboardPrimaryClear, dispatchKeyboardPrimaryDelete, dispatchKeyboardPrimarySend, keyboardDebugLog, keyboardResolutionDebugText, resolveVibeKeyboardEvent } from './android-keyboard.uts'
+
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import View from 'android.view.View'
+import OnTouchListener from 'android.view.View.OnTouchListener'
+import MotionEvent from 'android.view.MotionEvent'
+import Callback from 'android.view.Window.Callback'
+import KeyEvent from 'android.view.KeyEvent'
+import Menu from 'android.view.Menu'
+import MenuItem from 'android.view.MenuItem'
+import WindowManagerLayoutParams from 'android.view.WindowManager.LayoutParams'
+import AccessibilityEvent from 'android.view.accessibility.AccessibilityEvent'
+import ActionMode from 'android.view.ActionMode'
+import SearchEvent from 'android.view.SearchEvent'
+import ViewGroup from 'android.view.ViewGroup'
+import Color from 'android.graphics.Color'
+import Canvas from 'android.graphics.Canvas'
+import Paint from 'android.graphics.Paint'
+import Shader from 'android.graphics.Shader'
+import LinearGradient from 'android.graphics.LinearGradient'
+import RadialGradient from 'android.graphics.RadialGradient'
+// #endif
+
+const GLOBAL_VOICE_OWNER = 'global'
+const LONG_PRESS_MS = 1000
+const MOVE_SLOP_DP = 28
+const GLOBAL_VOICE_WATCHDOG_MS = 90000
+
+export type GlobalVoiceTextEvent = {
+	text: string
+	createdAt: string
+	mode: string
+	sessionId: number
+}
+
+export type GlobalVoiceStateEvent = {
+	active: boolean
+	recording: boolean
+	transcribing: boolean
+	sessionId: number
+	phase: string
+	trigger: string
+}
+
+// #ifdef APP-ANDROID
+let activeTouchListener: GlobalVoiceTouchListener | null = null
+let longPressTimer = 0
+let downX = 0
+let downY = 0
+let gestureTracking = false
+let moveSlopPx = 18
+let longPressTriggered = false
+let lastTouchEventToken = ''
+let globalVoiceWatchdogTimer = 0
+let globalSessionStartedAt = 0
+let globalRecording = false
+let globalTranscribing = false
+let globalDetachedTranscribing = false
+let globalSessionId = 0
+let globalMode = ''
+let globalTrigger = ''
+let localFinalText = ''
+let localPreviewText = ''
+let originalWindowCallback: Callback | null = null
+let activeWindowCallback: GlobalVoiceWindowCallback | null = null
+let voiceHudRoot: GlobalVoiceHudView | null = null
+let voiceHudAnimationTimer = 0
+let hardwareVoiceStopPending = false
+
+function globalVoiceLog(stage: string, message: string): void {
+}
+
+function currentGlobalVoicePhase(): string {
+	if (globalRecording) return 'recording'
+	if (globalTranscribing || globalDetachedTranscribing) return 'transcribing'
+	return 'idle'
+}
+
+function emitGlobalVoiceStateWithPhase(phase: string): void {
+	const resolvedPhase = phase.length > 0 ? phase : currentGlobalVoicePhase()
+	const event: GlobalVoiceStateEvent = {
+		active: isGlobalVoiceStateActive(),
+		recording: globalRecording,
+		transcribing: globalTranscribing || globalDetachedTranscribing,
+		sessionId: globalSessionId,
+		phase: resolvedPhase,
+		trigger: globalTrigger,
+	}
+	globalVoiceLog('emit-state', 'phase=' + resolvedPhase + ' trigger=' + globalTrigger + ' session=' + globalSessionId.toString() + ' active=' + isGlobalVoiceStateActive().toString())
+	uni.$emit('mobile-global-voice-state', event)
+}
+
+function emitGlobalVoiceState(): void {
+	emitGlobalVoiceStateWithPhase('')
+}
+
+function voiceColor(value: string): Int {
+	try {
+		return Color.parseColor(value)
+	} catch (_) {
+		return Color.TRANSPARENT
+	}
+}
+
+function voiceDp(value: number): Int {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return Math.round(value).toInt()
+	try {
+		const density = activity.getResources().getDisplayMetrics().density
+		return Math.round(value * density).toInt()
+	} catch (_) {
+		return Math.round(value).toInt()
+	}
+}
+
+function clampVoicePosition(value: Int, min: Int, max: Int): Int {
+	if (max < min) return min
+	if (value < min) return min
+	if (value > max) return max
+	return value
+}
+
+function clampVoiceFloat(value: Float, min: Float, max: Float): Float {
+	if (max < min) return min
+	if (value < min) return min
+	if (value > max) return max
+	return value
+}
+
+class GlobalVoiceHudView extends View {
+	private paint: Paint
+	private glowPaint: Paint
+	private frame: Int = 0
+	private transcribing: boolean = false
+	private anchorX: number = 0
+	private anchorY: number = 0
+
+	constructor(context: Context) {
+		super(context)
+		this.paint = new Paint()
+		this.paint.setAntiAlias(true)
+		this.glowPaint = new Paint()
+		this.glowPaint.setAntiAlias(true)
+		this.setClickable(false)
+		this.setFocusable(false)
+	}
+
+	setAnchor(x: number, y: number): void {
+		if (this.anchorX > 0 && this.anchorY > 0) return
+		this.anchorX = x
+		this.anchorY = y
+	}
+
+	setStatus(status: string): void {
+		this.transcribing = status.indexOf('转写') >= 0
+		this.invalidate()
+	}
+
+	tick(): void {
+		this.frame = (this.frame + 1).toInt()
+		this.invalidate()
+	}
+
+	private drawGlow(canvas: Canvas, width: Float, height: Float): void {
+		const sideW = voiceDp(118).toFloat()
+		const topH = voiceDp(132).toFloat()
+		const bottomH = voiceDp(142).toFloat()
+		this.glowPaint.setStyle(Paint.Style.FILL)
+
+		this.glowPaint.setShader(new LinearGradient(
+			0.0.toFloat(),
+			0.0.toFloat(),
+			sideW,
+			0.0.toFloat(),
+			Color.argb(112, 255, 71, 188),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawRect(0.0.toFloat(), 0.0.toFloat(), sideW, height, this.glowPaint)
+
+		this.glowPaint.setShader(new LinearGradient(
+			width,
+			0.0.toFloat(),
+			width - sideW,
+			0.0.toFloat(),
+			Color.argb(108, 29, 180, 255),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawRect(width - sideW, 0.0.toFloat(), width, height, this.glowPaint)
+
+		this.glowPaint.setShader(new LinearGradient(
+			0.0.toFloat(),
+			0.0.toFloat(),
+			0.0.toFloat(),
+			topH,
+			Color.argb(92, 255, 164, 123),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawRect(0.0.toFloat(), 0.0.toFloat(), width, topH, this.glowPaint)
+
+		this.glowPaint.setShader(new LinearGradient(
+			0.0.toFloat(),
+			height,
+			0.0.toFloat(),
+			height - bottomH,
+			Color.argb(100, 47, 226, 255),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawRect(0.0.toFloat(), height - bottomH, width, height, this.glowPaint)
+
+		this.drawRadialGlow(canvas, 0.0.toFloat(), height, voiceDp(250).toFloat(), Color.argb(95, 255, 64, 205))
+		this.drawRadialGlow(canvas, width, height, voiceDp(280).toFloat(), Color.argb(92, 16, 178, 255))
+		this.drawRadialGlow(canvas, width * 0.50.toFloat(), 0.0.toFloat(), voiceDp(250).toFloat(), Color.argb(72, 255, 186, 106))
+		this.drawRadialGlow(canvas, width * 0.46.toFloat(), height, voiceDp(250).toFloat(), Color.argb(54, 59, 245, 220))
+		this.glowPaint.setShader(null)
+	}
+
+	private drawRadialGlow(canvas: Canvas, cx: Float, cy: Float, radius: Float, color: Int): void {
+		this.glowPaint.setShader(new RadialGradient(
+			cx,
+			cy,
+			radius,
+			color,
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(cx, cy, radius, this.glowPaint)
+		this.glowPaint.setShader(null)
+	}
+
+	private ballCenterX(width: Float, radius: Float): Float {
+		const margin = voiceDp(20).toFloat()
+		const raw = this.anchorX > 0 ? this.anchorX.toFloat() : width * 0.5.toFloat()
+		return clampVoiceFloat(raw, margin + radius, width - margin - radius)
+	}
+
+	private ballCenterY(height: Float, radius: Float): Float {
+		const raw = this.anchorY > 0 ? (this.anchorY - voiceDp(92)).toFloat() : height * 0.5.toFloat()
+		return clampVoiceFloat(raw, voiceDp(88).toFloat() + radius, height - voiceDp(118).toFloat() - radius)
+	}
+
+	private drawBall(canvas: Canvas, cx: Float, cy: Float, radius: Float): void {
+		this.paint.setStyle(Paint.Style.FILL)
+		this.paint.setShader(new RadialGradient(
+			cx,
+			cy,
+			radius + voiceDp(25).toFloat(),
+			Color.argb(82, 255, 255, 255),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(cx, cy, radius + voiceDp(25).toFloat(), this.paint)
+		this.paint.setShader(new RadialGradient(
+			cx - radius * 0.30.toFloat(),
+			cy - radius * 0.36.toFloat(),
+			radius * 1.36.toFloat(),
+			Color.argb(236, 255, 255, 255),
+			Color.argb(168, 236, 252, 255),
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(cx, cy, radius, this.paint)
+
+		this.drawOrbColor(canvas, cx - radius * 0.32.toFloat(), cy + radius * 0.16.toFloat(), radius * 0.74.toFloat(), Color.argb(138, 255, 61, 196))
+		this.drawOrbColor(canvas, cx + radius * 0.30.toFloat(), cy + radius * 0.24.toFloat(), radius * 0.76.toFloat(), Color.argb(140, 45, 201, 255))
+		this.drawOrbColor(canvas, cx - radius * 0.02.toFloat(), cy - radius * 0.30.toFloat(), radius * 0.62.toFloat(), Color.argb(112, 255, 137, 91))
+		this.drawOrbColor(canvas, cx + radius * 0.18.toFloat(), cy - radius * 0.02.toFloat(), radius * 0.92.toFloat(), Color.argb(66, 255, 255, 255))
+
+		this.paint.setShader(new RadialGradient(
+			cx - radius * 0.34.toFloat(),
+			cy - radius * 0.40.toFloat(),
+			radius * 0.84.toFloat(),
+			Color.argb(180, 255, 255, 255),
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(cx - radius * 0.08.toFloat(), cy - radius * 0.12.toFloat(), radius * 0.92.toFloat(), this.paint)
+		this.paint.setShader(null)
+
+		this.paint.setStyle(Paint.Style.STROKE)
+		this.paint.setStrokeWidth(voiceDp(1.4).toFloat())
+		this.paint.setColor(Color.argb(220, 255, 255, 255))
+		canvas.drawCircle(cx, cy, radius, this.paint)
+		this.paint.setStrokeWidth(voiceDp(0.8).toFloat())
+		this.paint.setColor(Color.argb(90, 80, 180, 255))
+		canvas.drawCircle(cx, cy, radius - voiceDp(1.5).toFloat(), this.paint)
+		this.paint.setStyle(Paint.Style.FILL)
+	}
+
+	private drawOrbColor(canvas: Canvas, cx: Float, cy: Float, radius: Float, color: Int): void {
+		this.paint.setStyle(Paint.Style.FILL)
+		this.paint.setShader(new RadialGradient(
+			cx,
+			cy,
+			radius,
+			color,
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(cx, cy, radius, this.paint)
+		this.paint.setShader(null)
+	}
+
+	private drawWave(canvas: Canvas, cx: Float, cy: Float): void {
+		this.paint.setStyle(Paint.Style.FILL)
+		this.paint.setColor(Color.argb(235, 255, 255, 255))
+		if (this.transcribing) {
+			const dot = voiceDp(3.6).toFloat()
+			const gap = voiceDp(10).toFloat()
+			const phase = this.frame.toFloat() * 0.32.toFloat()
+			for (let index: Int = 0; index < 3; index++) {
+				const wave = Math.sin(phase + (index.toFloat() * 1.35.toFloat())).toFloat()
+				const pulse = (wave + 1.0.toFloat()) * 0.5.toFloat()
+				const radius = dot + (pulse * voiceDp(1.8).toFloat())
+				canvas.drawCircle(cx + ((index - 1).toFloat() * gap), cy, radius, this.paint)
+			}
+			return
+		}
+		const barW = voiceDp(4).toFloat()
+		const gap = voiceDp(3).toFloat()
+		const total = (barW * 8.0.toFloat()) + (gap * 7.0.toFloat())
+		const minH = voiceDp(14).toFloat()
+		const maxAdd = voiceDp(22).toFloat()
+		const phase = this.frame.toFloat() * 0.28.toFloat()
+		let left = cx - (total / 2.0.toFloat())
+		for (let index: Int = 0; index < 8; index++) {
+			const wave = Math.sin(phase + (index.toFloat() * 0.82.toFloat())).toFloat()
+			const normalized = (wave + 1.0.toFloat()) * 0.5.toFloat()
+			const h = minH + (maxAdd * normalized)
+			const top = cy - (h / 2.0.toFloat())
+			const right = left + barW
+			canvas.drawRoundRect(left, top, right, top + h, barW / 2.0.toFloat(), barW / 2.0.toFloat(), this.paint)
+			left = right + gap
+		}
+	}
+
+	override onDraw(canvas: Canvas): void {
+		super.onDraw(canvas)
+		const width = this.getWidth().toFloat()
+		const height = this.getHeight().toFloat()
+		if (width <= 0.0 || height <= 0.0) return
+		this.drawGlow(canvas, width, height)
+		const radius = voiceDp(43).toFloat()
+		const cx = this.ballCenterX(width, radius)
+		const cy = this.ballCenterY(height, radius)
+		this.drawBall(canvas, cx, cy, radius)
+		this.drawWave(canvas, cx, cy)
+	}
+}
+
+function updateGlobalVoiceHud(status: string): void {
+	voiceHudRoot?.setStatus(status)
+}
+
+function hideGlobalVoiceHud(): void {
+	const root = voiceHudRoot
+	voiceHudRoot = null
+	if (voiceHudAnimationTimer != 0) {
+		clearInterval(voiceHudAnimationTimer)
+		voiceHudAnimationTimer = 0
+	}
+	if (root == null) return
+	try {
+		const parent = root.getParent()
+		if (parent instanceof ViewGroup) {
+			(parent as ViewGroup).removeView(root)
+		}
+	} catch (error) {
+		globalVoiceLog('hud-hide-failed', '' + error)
+	}
+}
+
+function showGlobalVoiceHud(status: string): void {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return
+	if (voiceHudRoot != null) {
+		updateGlobalVoiceHud(status)
+		return
+	}
+	try {
+		const decor = activity.getWindow().getDecorView()
+		if (!(decor instanceof ViewGroup)) return
+		const parent = decor as ViewGroup
+		const root = new GlobalVoiceHudView(activity)
+		root.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		if (downX > 0 && downY > 0) root.setAnchor(downX, downY)
+		root.setStatus(status)
+		voiceHudRoot = root
+		parent.addView(root)
+		voiceHudAnimationTimer = setInterval(() => {
+			voiceHudRoot?.tick()
+		}, 40)
+	} catch (error) {
+		globalVoiceLog('hud-show-failed', '' + error)
+		hideGlobalVoiceHud()
+	}
+}
+
+function clearLongPressTimer(): void {
+	if (longPressTimer != 0) {
+		clearTimeout(longPressTimer)
+		longPressTimer = 0
+	}
+}
+
+function clearGlobalVoiceWatchdog(): void {
+	if (globalVoiceWatchdogTimer != 0) {
+		clearTimeout(globalVoiceWatchdogTimer)
+		globalVoiceWatchdogTimer = 0
+	}
+}
+
+function armGlobalVoiceWatchdog(sessionId: number): void {
+	clearGlobalVoiceWatchdog()
+	globalVoiceWatchdogTimer = setTimeout(() => {
+		globalVoiceWatchdogTimer = 0
+		if (globalSessionId != sessionId) return
+		if (!globalRecording && !globalTranscribing && activeVoiceSessionOwner() != GLOBAL_VOICE_OWNER) return
+		globalVoiceLog('watchdog-reset', sessionId.toString())
+		cancelVoiceRecording()
+		resetGlobalVoiceState()
+		showGlobalVoiceToast('语音会话已重置，请重新长按')
+	}, GLOBAL_VOICE_WATCHDOG_MS)
+}
+
+function resetGesture(): void {
+	clearLongPressTimer()
+	longPressTriggered = false
+	gestureTracking = false
+	downX = 0
+	downY = 0
+}
+
+function resetGlobalVoiceState(): void {
+	clearGlobalVoiceWatchdog()
+	hideGlobalVoiceHud()
+	globalRecording = false
+	globalTranscribing = false
+	globalDetachedTranscribing = false
+	globalSessionId = 0
+	globalSessionStartedAt = 0
+	globalMode = ''
+	globalTrigger = ''
+	localFinalText = ''
+	localPreviewText = ''
+	releaseVoiceSession(GLOBAL_VOICE_OWNER)
+	emitGlobalVoiceState()
+}
+
+function releaseGlobalVoiceForCloudTranscribe(): void {
+	clearGlobalVoiceWatchdog()
+	globalRecording = false
+	globalTranscribing = false
+	globalDetachedTranscribing = true
+	globalSessionId = 0
+	globalSessionStartedAt = 0
+	globalMode = ''
+	globalTrigger = ''
+	localFinalText = ''
+	localPreviewText = ''
+	releaseVoiceSession(GLOBAL_VOICE_OWNER)
+	updateGlobalVoiceHud('转写中...')
+	emitGlobalVoiceState()
+}
+
+function isGlobalBusy(): boolean {
+	const owner = activeVoiceSessionOwner()
+	if (owner != GLOBAL_VOICE_OWNER) return globalRecording || globalTranscribing || owner.length > 0
+	if (!globalRecording && !globalTranscribing) {
+		globalVoiceLog('stale-lock-release', 'owner-only')
+		releaseVoiceSession(GLOBAL_VOICE_OWNER)
+		return false
+	}
+	if (globalSessionStartedAt > 0 && Date.now() - globalSessionStartedAt > GLOBAL_VOICE_WATCHDOG_MS) {
+		globalVoiceLog('stale-lock-release', 'timeout')
+		cancelVoiceRecording()
+		resetGlobalVoiceState()
+		return false
+	}
+	return true
+}
+
+function isGlobalVoiceStateActive(): boolean {
+	return globalRecording || globalTranscribing || globalDetachedTranscribing
+}
+
+function showGlobalVoiceToast(text: string): void {
+	uni.showToast({ title: text, icon: 'none' })
+}
+
+function routeGlobalVoiceTextWithMode(text: string, mode: string, sessionId: number): void {
+	const clean = text.trim()
+	if (clean.length == 0) {
+		showGlobalVoiceToast('未识别到有效语音')
+		return
+	}
+	const event: GlobalVoiceTextEvent = {
+		text: clean,
+		createdAt: new Date().toISOString(),
+		mode: mode.length > 0 ? mode : getAsrMode(),
+		sessionId,
+	}
+	setPendingGlobalVoiceText(clean)
+	globalVoiceLog('emit-text', 'session=' + sessionId.toString() + ' length=' + clean.length.toString())
+	uni.$emit('mobile-global-voice-text', event)
+	globalVoiceLog('transcribe-result', 'emit-and-pending')
+}
+
+function routeGlobalVoiceText(text: string): void {
+	routeGlobalVoiceTextWithMode(text, globalMode.length > 0 ? globalMode : getAsrMode(), globalSessionId)
+}
+
+function finishGlobalVoiceText(text: string, mode: string, resetAfterRoute: boolean, sessionId: number): void {
+	try {
+		routeGlobalVoiceTextWithMode(text, mode, sessionId)
+	} catch (error) {
+		globalVoiceLog('route-failed', '' + error)
+		showGlobalVoiceToast('语音文字写入失败')
+	} finally {
+		if (resetAfterRoute) resetGlobalVoiceState()
+	}
+}
+
+function startCloudGlobalVoice(sessionId: number): void {
+	requestRecordAudioPermission((granted) => {
+		if (globalSessionId != sessionId) return
+		if (!granted) {
+			resetGlobalVoiceState()
+			showGlobalVoiceToast('需要麦克风权限才能录音')
+			return
+		}
+		startVoiceRecording((result) => {
+			if (globalSessionId != sessionId) return
+			if (!result.ok) {
+				resetGlobalVoiceState()
+				showGlobalVoiceToast(result.error.length > 0 ? result.error : '启动录音失败')
+				return
+			}
+			globalRecording = true
+			globalTranscribing = false
+			showGlobalVoiceHud('正在录音，松手转文字')
+			emitGlobalVoiceStateWithPhase('recording')
+			if (hardwareVoiceStopPending) {
+				hardwareVoiceStopPending = false
+				setTimeout(() => {
+					stopGlobalVoice()
+				}, 80)
+			}
+		})
+	})
+}
+
+function startGlobalVoice(useTouchAnchor: boolean, trigger: string): void {
+	if (isGlobalBusy()) {
+		globalVoiceLog('start-skip', 'busy trigger=' + trigger)
+		return
+	}
+	if (!claimVoiceSession(GLOBAL_VOICE_OWNER)) {
+		showGlobalVoiceToast('已有录音正在进行')
+		globalVoiceLog('start-blocked', 'voice-session-busy')
+		return
+	}
+	if (!useTouchAnchor) {
+		downX = 0
+		downY = 0
+	}
+	globalSessionId = Date.now()
+	globalSessionStartedAt = globalSessionId
+	globalMode = 'cloud'
+	globalTrigger = trigger
+	globalRecording = false
+	globalTranscribing = true
+	localFinalText = ''
+	localPreviewText = ''
+	showGlobalVoiceHud('准备录音...')
+	globalVoiceLog('start-record', 'trigger=' + trigger + ' session=' + globalSessionId.toString() + ' mode=' + (globalMode.length > 0 ? globalMode : 'cloud'))
+	armGlobalVoiceWatchdog(globalSessionId)
+	emitGlobalVoiceStateWithPhase('start')
+	startCloudGlobalVoice(globalSessionId)
+}
+
+function stopCloudGlobalVoice(sessionId: number): void {
+	globalRecording = false
+	globalTranscribing = true
+	showGlobalVoiceHud('转写中...')
+	emitGlobalVoiceState()
+	const routeMode = globalMode.length > 0 ? globalMode : getAsrMode()
+	stopVoiceRecording((result) => {
+		if (globalSessionId != sessionId) return
+		if (!result.ok || result.path.length == 0) {
+			const error = result.error.length > 0 ? result.error : '结束录音失败'
+			resetGlobalVoiceState()
+			showGlobalVoiceToast(error)
+			return
+		}
+		const audioPath = result.path
+		globalVoiceLog('release-before-transcribe', sessionId.toString())
+		releaseGlobalVoiceForCloudTranscribe()
+		transcribeMobileAudio(audioPath, (ok, text, error) => {
+			if (ok) {
+				finishGlobalVoiceText(text, routeMode, false, sessionId)
+				hideGlobalVoiceHud()
+				globalDetachedTranscribing = false
+				emitGlobalVoiceState()
+				return
+			}
+			hideGlobalVoiceHud()
+			globalDetachedTranscribing = false
+			emitGlobalVoiceState()
+			showGlobalVoiceToast(error.length > 0 ? error : '语音转写失败')
+		})
+	})
+}
+
+function stopGlobalVoice(): void {
+	if (!isGlobalBusy()) return
+	const sessionId = globalSessionId
+	stopCloudGlobalVoice(sessionId)
+}
+
+function cancelGlobalVoice(): void {
+	if (!isGlobalBusy()) return
+	cancelVoiceRecording()
+	resetGlobalVoiceState()
+}
+
+function startGlobalVoiceByHardware(trigger: string): void {
+	hardwareVoiceStopPending = false
+	startGlobalVoice(false, trigger.length > 0 ? trigger : 'keyboard')
+}
+
+function stopGlobalVoiceByHardware(trigger: string): void {
+	if (globalRecording) {
+		stopGlobalVoice()
+		return
+	}
+	if (globalTranscribing && globalSessionId > 0 && globalTrigger == trigger) {
+		hardwareVoiceStopPending = true
+	}
+}
+
+function handleGlobalVoiceKeyEvent(event: KeyEvent): boolean {
+	const result = resolveVibeKeyboardEvent(event)
+	keyboardDebugLog('dispatch-result', keyboardResolutionDebugText(result))
+	if (!result.consume) {
+		keyboardDebugLog('dispatch-pass-through', keyboardResolutionDebugText(result))
+		return false
+	}
+	if (result.action == 'global-record') {
+		if (result.phase == 'down') {
+			keyboardDebugLog('action-global-record-down', 'repeat=' + result.key.repeatCount.toString() + ' trigger=' + result.trigger)
+			if (result.key.repeatCount == 0) startGlobalVoiceByHardware(result.trigger)
+			return true
+		}
+		if (result.phase == 'up') {
+			keyboardDebugLog('action-global-record-up', 'trigger=' + result.trigger)
+			stopGlobalVoiceByHardware(result.trigger)
+			return true
+		}
+		keyboardDebugLog('action-global-record-consume', 'phase=' + result.phase)
+		return true
+	}
+	if (result.action == 'send' || result.action == 'cancel' || result.action == 'noop' || result.action == 'delete' || result.action == 'learned') {
+		if (result.action == 'send') {
+			if (result.phase == 'down') {
+				keyboardDebugLog('action-send-down-consume', 'repeat=' + result.key.repeatCount.toString())
+				return true
+			}
+			if (result.phase == 'up') {
+				keyboardDebugLog('action-dispatch', 'action=send phase=up repeat=' + result.key.repeatCount.toString())
+				const handled = dispatchKeyboardPrimarySend()
+				keyboardDebugLog('action-send-direct', 'handled=' + (handled ? '1' : '0'))
+				if (handled) return true
+				uni.$emit('vibego-keyboard-action', result)
+				keyboardDebugLog('action-emit', 'action=send')
+				return true
+			}
+		}
+		if (result.phase == 'down' && (result.key.repeatCount == 0 || result.action == 'delete')) {
+			keyboardDebugLog('action-dispatch', 'action=' + result.action + ' repeat=' + result.key.repeatCount.toString())
+			if (result.action == 'delete') {
+				const handled = dispatchKeyboardPrimaryDelete()
+				keyboardDebugLog('action-delete-direct', 'handled=' + (handled ? '1' : '0'))
+				if (handled) return true
+			}
+			if (result.action == 'noop') {
+				const handled = dispatchKeyboardPrimaryClear()
+				keyboardDebugLog('action-clear-direct', 'handled=' + (handled ? '1' : '0'))
+				if (handled) return true
+			}
+			uni.$emit('vibego-keyboard-action', result)
+			keyboardDebugLog('action-emit', 'action=' + result.action)
+		}
+		if (result.phase == 'up') {
+			keyboardDebugLog('action-up-consume', 'action=' + result.action)
+		}
+		return true
+	}
+	keyboardDebugLog('action-consume-unknown', 'action=' + result.action + ' phase=' + result.phase)
+	return true
+}
+
+function scheduleLongPress(): void {
+	clearLongPressTimer()
+	longPressTimer = setTimeout(() => {
+		longPressTimer = 0
+		if (!gestureTracking || longPressTriggered) return
+		longPressTriggered = true
+		globalVoiceLog('longpress-fired', `${downX},${downY}`)
+		startGlobalVoice(false, 'long_press')
+	}, LONG_PRESS_MS)
+}
+
+function distanceExceeded(x: number, y: number): boolean {
+	const dx = x - downX
+	const dy = y - downY
+	return Math.sqrt((dx * dx) + (dy * dy)) > moveSlopPx
+}
+
+function isDuplicateTouchEvent(event: MotionEvent, action: Int): boolean {
+	const token = event.getDownTime().toString() + ':' + action.toString() + ':' + event.getEventTime().toString()
+	if (token == lastTouchEventToken) return true
+	lastTouchEventToken = token
+	return false
+}
+
+function handleGlobalVoiceMotionEvent(event: MotionEvent | null): void {
+	if (event == null) return
+	const action = event.getActionMasked()
+	if (isDuplicateTouchEvent(event, action)) return
+	if (action == MotionEvent.ACTION_DOWN) {
+		resetGesture()
+		if (event.getPointerCount() != 1) return
+		if (isGlobalBusy()) {
+			globalVoiceLog('down-skip', 'busy')
+			return
+		}
+		downX = event.getRawX()
+		downY = event.getRawY()
+		gestureTracking = true
+		longPressTriggered = false
+		globalVoiceLog('down', `${downX},${downY}`)
+		scheduleLongPress()
+		return
+	}
+	if (action == MotionEvent.ACTION_POINTER_DOWN) {
+		if (gestureTracking && !longPressTriggered) {
+			globalVoiceLog('pointer-cancel', 'multi-touch')
+			resetGesture()
+		}
+		return
+	}
+	if (action == MotionEvent.ACTION_MOVE) {
+		if (!gestureTracking) return
+		if (longPressTriggered) return
+		if (distanceExceeded(event.getRawX(), event.getRawY())) {
+			globalVoiceLog('move-cancel', `${event.getRawX()},${event.getRawY()}`)
+			resetGesture()
+		}
+		return
+	}
+	if (action == MotionEvent.ACTION_UP) {
+		clearLongPressTimer()
+		if (gestureTracking && longPressTriggered) {
+			globalVoiceLog('up-stop', 'stop-record')
+			stopGlobalVoice()
+		}
+		resetGesture()
+		return
+	}
+	if (action == MotionEvent.ACTION_CANCEL) {
+		clearLongPressTimer()
+		if (gestureTracking && longPressTriggered) {
+			globalVoiceLog('cancel', 'cancel-record')
+			cancelGlobalVoice()
+		}
+		resetGesture()
+		return
+	}
+}
+
+class GlobalVoiceTouchListener implements OnTouchListener {
+	override onTouch(_view?: View, event?: MotionEvent): boolean {
+		handleGlobalVoiceMotionEvent(event ?? null)
+		return false
+	}
+}
+
+class GlobalVoiceWindowCallback implements Callback {
+	private base: Callback
+
+	constructor(base: Callback) {
+		this.base = base
+	}
+
+	override dispatchKeyEvent(event: KeyEvent): boolean {
+		keyboardDebugLog('window-dispatchKeyEvent', 'action=' + event.getAction().toString() + ' keyCode=' + event.getKeyCode().toString() + ' scanCode=' + event.getScanCode().toString() + ' repeat=' + event.getRepeatCount().toString())
+		if (handleGlobalVoiceKeyEvent(event)) {
+			keyboardDebugLog('window-dispatchKeyEvent-consumed', 'keyCode=' + event.getKeyCode().toString() + ' scanCode=' + event.getScanCode().toString())
+			return true
+		}
+		keyboardDebugLog('window-dispatchKeyEvent-base', 'keyCode=' + event.getKeyCode().toString() + ' scanCode=' + event.getScanCode().toString())
+		return this.base.dispatchKeyEvent(event)
+	}
+
+	override dispatchKeyShortcutEvent(event: KeyEvent): boolean {
+		return this.base.dispatchKeyShortcutEvent(event)
+	}
+
+	override dispatchTouchEvent(event: MotionEvent): boolean {
+		handleGlobalVoiceMotionEvent(event)
+		return this.base.dispatchTouchEvent(event)
+	}
+
+	override dispatchTrackballEvent(event: MotionEvent): boolean {
+		return this.base.dispatchTrackballEvent(event)
+	}
+
+	override dispatchGenericMotionEvent(event: MotionEvent): boolean {
+		return this.base.dispatchGenericMotionEvent(event)
+	}
+
+	override dispatchPopulateAccessibilityEvent(event: AccessibilityEvent): boolean {
+		return this.base.dispatchPopulateAccessibilityEvent(event)
+	}
+
+	override onCreatePanelView(featureId: Int): View | null {
+		return this.base.onCreatePanelView(featureId)
+	}
+
+	override onCreatePanelMenu(featureId: Int, menu: Menu): boolean {
+		return this.base.onCreatePanelMenu(featureId, menu)
+	}
+
+	override onPreparePanel(featureId: Int, view: View | null, menu: Menu): boolean {
+		return this.base.onPreparePanel(featureId, view, menu)
+	}
+
+	override onMenuOpened(featureId: Int, menu: Menu): boolean {
+		return this.base.onMenuOpened(featureId, menu)
+	}
+
+	override onMenuItemSelected(featureId: Int, item: MenuItem): boolean {
+		return this.base.onMenuItemSelected(featureId, item)
+	}
+
+	override onWindowAttributesChanged(attrs: WindowManagerLayoutParams): void {
+		this.base.onWindowAttributesChanged(attrs)
+	}
+
+	override onContentChanged(): void {
+		this.base.onContentChanged()
+	}
+
+	override onWindowFocusChanged(hasFocus: boolean): void {
+		this.base.onWindowFocusChanged(hasFocus)
+	}
+
+	override onAttachedToWindow(): void {
+		this.base.onAttachedToWindow()
+	}
+
+	override onDetachedFromWindow(): void {
+		this.base.onDetachedFromWindow()
+	}
+
+	override onPanelClosed(featureId: Int, menu: Menu): void {
+		this.base.onPanelClosed(featureId, menu)
+	}
+
+	override onSearchRequested(): boolean {
+		return this.base.onSearchRequested()
+	}
+
+	override onSearchRequested(searchEvent: SearchEvent): boolean {
+		return this.base.onSearchRequested(searchEvent)
+	}
+
+	override onWindowStartingActionMode(callback: ActionMode.Callback): ActionMode | null {
+		return this.base.onWindowStartingActionMode(callback)
+	}
+
+	override onWindowStartingActionMode(callback: ActionMode.Callback, type: Int): ActionMode | null {
+		return this.base.onWindowStartingActionMode(callback, type)
+	}
+
+	override onActionModeStarted(mode: ActionMode): void {
+		this.base.onActionModeStarted(mode)
+	}
+
+	override onActionModeFinished(mode: ActionMode): void {
+		this.base.onActionModeFinished(mode)
+	}
+}
+
+// #endif
+
+export function isGlobalVoiceActive(): boolean {
+	// #ifdef APP-ANDROID
+	return isGlobalVoiceStateActive()
+	// #endif
+	return false
+}
+
+export function toggleGlobalVoiceFromButton(): void {
+	// #ifdef APP-ANDROID
+	if (globalTranscribing || globalDetachedTranscribing) return
+	if (globalRecording) {
+		globalVoiceLog('button-stop', 'stop-record')
+		stopGlobalVoice()
+		return
+	}
+	globalVoiceLog('button-start', 'center-hud')
+	startGlobalVoice(false, 'button')
+	// #endif
+	// #ifndef APP-ANDROID
+	uni.showToast({ title: '当前平台暂不支持录音', icon: 'none' })
+	// #endif
+}
+
+export function startGlobalVoiceFromHardware(trigger: string): void {
+	// #ifdef APP-ANDROID
+	startGlobalVoiceByHardware(trigger)
+	// #endif
+}
+
+export function stopGlobalVoiceFromHardware(trigger: string): void {
+	// #ifdef APP-ANDROID
+	stopGlobalVoiceByHardware(trigger)
+	// #endif
+}
+
+export function installGlobalVoiceLongPress(): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return
+	try {
+		const density = activity.getResources().getDisplayMetrics().density
+		moveSlopPx = MOVE_SLOP_DP * density
+	} catch (_) {
+		moveSlopPx = MOVE_SLOP_DP
+	}
+	const window = activity.getWindow()
+	const currentCallback = window.getCallback()
+	if (activeWindowCallback != null && currentCallback == activeWindowCallback) {
+		globalVoiceLog('install', 'callback-already-installed')
+		return
+	}
+	if (currentCallback != null) {
+		originalWindowCallback = currentCallback
+		activeWindowCallback = new GlobalVoiceWindowCallback(currentCallback as Callback)
+		window.setCallback(activeWindowCallback as Callback)
+		if (activeTouchListener != null) {
+			window.getDecorView().setOnTouchListener(null)
+			activeTouchListener = null
+		}
+		globalVoiceLog('reinstall-callback', 'callback-installed')
+		return
+	}
+	if (activeTouchListener == null) {
+		activeTouchListener = new GlobalVoiceTouchListener()
+	}
+	window.getDecorView().setOnTouchListener(activeTouchListener)
+	globalVoiceLog('install', 'touch-listener-fallback')
+	// #endif
+}
+
+export function uninstallGlobalVoiceLongPress(): void {
+	// #ifdef APP-ANDROID
+	clearLongPressTimer()
+	cancelGlobalVoice()
+	const activity = UTSAndroid.getUniActivity()
+	if (activity != null) {
+		const window = activity.getWindow()
+		if (activeWindowCallback != null && window.getCallback() == activeWindowCallback && originalWindowCallback != null) {
+			window.setCallback(originalWindowCallback as Callback)
+		}
+		if (activeTouchListener != null) {
+			window.getDecorView().setOnTouchListener(null)
+		}
+	}
+	activeTouchListener = null
+	activeWindowCallback = null
+	originalWindowCallback = null
+	globalVoiceLog('uninstall', 'uninstalled')
+	// #endif
+}

@@ -1,0 +1,49 @@
+// #ifdef APP-ANDROID
+import Build from 'android.os.Build'
+import Color from 'android.graphics.Color'
+import ColorDrawable from 'android.graphics.drawable.ColorDrawable'
+import View from 'android.view.View'
+import WindowManager from 'android.view.WindowManager'
+// #endif
+
+export function applyAndroidSystemBars(): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return
+	try {
+		const window = activity.getWindow()
+		const decorView = window.getDecorView()
+		window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS)
+		window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
+		window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+		let flags: Int = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+		flags = flags | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+		flags = flags | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+		if (Build.VERSION.SDK_INT >= 23) {
+			flags = flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+		}
+		if (Build.VERSION.SDK_INT >= 26) {
+			flags = flags | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+		}
+		decorView.setSystemUiVisibility(flags)
+		decorView.setBackgroundColor(Color.TRANSPARENT)
+		window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT))
+		window.setNavigationBarColor(Color.TRANSPARENT)
+		window.setStatusBarColor(Color.TRANSPARENT)
+		if (Build.VERSION.SDK_INT >= 28) {
+			window.setNavigationBarDividerColor(Color.TRANSPARENT)
+		}
+		if (Build.VERSION.SDK_INT >= 29) {
+			window.setNavigationBarContrastEnforced(false)
+			window.setStatusBarContrastEnforced(false)
+		}
+		if (Build.VERSION.SDK_INT >= 30) {
+			window.setDecorFitsSystemWindows(false)
+			window.setNavigationBarColor(Color.TRANSPARENT)
+			window.setStatusBarColor(Color.TRANSPARENT)
+		}
+	} catch (error) {
+		console.log('[vibego-system-bars]', 'apply-failed', error)
+	}
+	// #endif
+}

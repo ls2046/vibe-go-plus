@@ -1,0 +1,170 @@
+import { uploadSharedUriString } from './android-drop.uts'
+import { saveAppLinkRecord } from './app-state.uts'
+
+// #ifdef APP-ANDROID
+import Intent from 'android.content.Intent'
+import ClipData from 'android.content.ClipData'
+import Uri from 'android.net.Uri'
+// #endif
+
+// #ifdef APP-ANDROID
+let lastShareKey = ''
+let lastShareAt = 0
+
+function shareLog(stage: string, message: string): void {
+	console.log('[vibego-share]', stage, message)
+}
+
+function emitSharedText(text: string): void {
+	if (text.length == 0) return
+	uni.$emit('mobile-share-text', text)
+	shareLog('text', 'length=' + text.length.toString())
+}
+
+function rememberAppLink(action: string, source: string, uri: string, mimeType: string, text: string): void {
+	saveAppLinkRecord({
+		action,
+		source,
+		uri,
+		mimeType,
+		text,
+		createdAt: new Date().toISOString(),
+	})
+}
+
+function uploadSharedUri(uri: Uri | null, handledUris: Array<string>): boolean {
+	if (uri == null) return false
+	const uriText = uri.toString()
+	if (handledUris.indexOf(uriText) >= 0) {
+		shareLog('skip-uri', uriText)
+		return false
+	}
+	handledUris.push(uriText)
+	uploadSharedUriString(uriText)
+	return true
+}
+
+function handleSharedClipData(clipData: ClipData | null, handledUris: Array<string>): Int {
+	if (clipData == null) return 0
+	const count = clipData.getItemCount()
+	let handled: Int = 0
+	for (let index: Int = 0; index < count; index++) {
+		const item = clipData.getItemAt(index)
+		const uri = item.getUri()
+		if (uri != null) {
+			shareLog('clip-uri', 'index=' + index.toString() + ' uri=' + uri.toString())
+			if (uploadSharedUri(uri, handledUris)) handled++
+			continue
+		}
+		const text = item.getText()
+		if (text != null) {
+			emitSharedText(text.toString())
+			handled++
+		}
+	}
+	return handled
+}
+
+function handleSingleShare(intent: Intent): Int {
+	const handledUris = new Array<string>()
+	let handled: Int = handleSharedClipData(intent.getClipData(), handledUris)
+	const action = intent.getAction() ?? ''
+	const mimeType = intent.getType() ?? ''
+	let sharedText = ''
+	try {
+		const stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+		if (stream != null) {
+			shareLog('extra-stream', stream.toString())
+			if (uploadSharedUri(stream, handledUris)) handled++
+		}
+	} catch (error) {
+		shareLog('extra-stream-failed', error.toString())
+	}
+	try {
+		sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?? ''
+		if (sharedText.length > 0) {
+			emitSharedText(sharedText)
+			handled++
+		}
+	} catch (error) {
+		shareLog('extra-text-failed', error.toString())
+	}
+	rememberAppLink(action, 'share', handledUris.length > 0 ? handledUris[0] : '', mimeType, sharedText)
+	return handled
+}
+
+function handleMultipleShare(intent: Intent): Int {
+	const handledUris = new Array<string>()
+	let handled: Int = handleSharedClipData(intent.getClipData(), handledUris)
+	const action = intent.getAction() ?? ''
+	const mimeType = intent.getType() ?? ''
+	try {
+		const streams = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+		if (streams != null) {
+			const count = streams.size
+			for (let index: Int = 0; index < count; index++) {
+				const uri = streams.get(index) as Uri
+				shareLog('extra-stream-list', 'index=' + index.toString() + ' uri=' + uri.toString())
+				if (uploadSharedUri(uri, handledUris)) handled++
+			}
+		}
+	} catch (error) {
+		shareLog('extra-stream-list-failed', error.toString())
+	}
+	rememberAppLink(action, 'share-multiple', handledUris.join('\n'), mimeType, '')
+	return handled
+}
+
+function handleViewIntent(intent: Intent): Int {
+	const action = intent.getAction() ?? ''
+	const mimeType = intent.getType() ?? ''
+	const uri = intent.getData()
+	const uriText = uri?.toString() ?? ''
+	let handled: Int = 0
+	if (uriText.length > 0) {
+		rememberAppLink(action, 'view', uriText, mimeType, '')
+		if (uri != null && (uriText.startsWith('content://') || uriText.startsWith('file://'))) {
+			shareLog('view-uri', uriText)
+			uploadSharedUriString(uriText)
+			handled = 1
+		}
+	} else {
+		rememberAppLink(action, 'view', '', mimeType, '')
+	}
+	return handled
+}
+
+function intentShareKey(intent: Intent): string {
+	try {
+		return intent.toUri(0)
+	} catch (_) {
+		return (intent.getAction() ?? '') + '|' + (intent.getType() ?? '') + '|' + Date.now().toString()
+	}
+}
+// #endif
+
+export function handleSystemShareIntent(): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return
+	const intent = activity.getIntent()
+	if (intent == null) return
+	const action = intent.getAction() ?? ''
+	if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE && action != Intent.ACTION_VIEW) return
+
+	const key = intentShareKey(intent)
+	const now = Date.now()
+	if (key == lastShareKey && now - lastShareAt < 2000) {
+		shareLog('skip', 'duplicate intent')
+		return
+	}
+	lastShareKey = key
+	lastShareAt = now
+
+	const handled = action == Intent.ACTION_SEND_MULTIPLE ? handleMultipleShare(intent) : (action == Intent.ACTION_VIEW ? handleViewIntent(intent) : handleSingleShare(intent))
+	shareLog('handled', 'action=' + action + ' count=' + handled.toString())
+	if (handled == 0 && action != Intent.ACTION_VIEW) {
+		uni.showToast({ title: '没有读取到分享文件', icon: 'none' })
+	}
+	// #endif
+}

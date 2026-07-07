@@ -1,0 +1,61 @@
+{
+	"pages": [ //pages数组中第一项表示应用启动页，参考：https://doc.dcloud.net.cn/uni-app-x/collocation/pagesjson.html
+		{
+			"path": "pages/index/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "VibeGo"
+			}
+		},
+		{
+			"path": "pages/files/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "文件"
+			}
+		},
+		{
+			"path": "pages/terminal/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "AI 终端"
+			}
+		},
+		{
+			"path": "pages/web/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "网页浏览"
+			}
+		},
+		{
+			"path": "pages/annotate/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "截图标注"
+			}
+		},
+		{
+			"path": "pages/background-test/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "Android 能力中心"
+			}
+		},
+		{
+			"path": "pages/keyboard/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "键盘设置"
+			}
+		}
+	],
+	"globalStyle": {
+		"navigationStyle": "custom",
+		"navigationBarTextStyle": "black",
+		"navigationBarTitleText": "VibeGo",
+		"navigationBarBackgroundColor": "#F8F8F8",
+		"backgroundColor": "#F8F8F8"
+	},
+	"uniIdRouter": {}
+}

@@ -1,0 +1,69 @@
+import { type ChatMessage, type CodexProcessEvent, type CodexThread, type ProjectInfo } from '../../../common/mobile-api.uts'
+
+export type TreeNode = {
+	path: string
+	name: string
+	type: string
+	size: number
+	level: number
+	expanded: boolean
+}
+
+export type ProjectThreadGroup = {
+	project: ProjectInfo
+	threads: Array<CodexThread>
+	collapsed: boolean
+	kind: string
+}
+
+export type DropSendTarget = {
+	kind: string
+	title: string
+	subtitle: string
+	threadId: string
+	projectId: string
+	scope: string
+}
+
+export type ComposerAttachment = {
+	url: string
+	path: string
+	mimeType: string
+	name: string
+}
+
+export type Point = {
+	x: number
+	y: number
+}
+
+export type Segment = {
+	x1: number
+	y1: number
+	x2: number
+	y2: number
+}
+
+export type ChatTextSegment = {
+	kind: string
+	text: string
+	url: string
+}
+
+export type ChatTextBlock = {
+	kind: string
+	text: string
+	rawText: string
+	segments: Array<ChatTextSegment>
+}
+
+export type ChatMessageView = {
+	id: string
+	role: string
+	label: string
+	text: string
+	timestamp: string
+	blocks: Array<ChatTextBlock>
+}
+
+export type { ChatMessage, CodexProcessEvent, CodexThread, ProjectInfo }

@@ -1,0 +1,160 @@
+import Context from 'android.content.Context'
+import View from 'android.view.View'
+import ViewGroup from 'android.view.ViewGroup'
+import Color from 'android.graphics.Color'
+import Canvas from 'android.graphics.Canvas'
+import Paint from 'android.graphics.Paint'
+import Shader from 'android.graphics.Shader'
+import LinearGradient from 'android.graphics.LinearGradient'
+import RadialGradient from 'android.graphics.RadialGradient'
+import RectF from 'android.graphics.RectF'
+
+function depthColor(value: string): Int {
+	try {
+		return Color.parseColor(value)
+	} catch (_) {
+		return Color.TRANSPARENT
+	}
+}
+
+class NativeDepthIconButtonView extends View {
+	private fillPaint: Paint
+	private strokePaint: Paint
+	private glowPaint: Paint
+	private variant: string = 'neutral'
+	private active: boolean = false
+	private disabled: boolean = false
+
+	constructor(context: Context) {
+		super(context)
+		this.fillPaint = new Paint()
+		this.fillPaint.setAntiAlias(true)
+		this.strokePaint = new Paint()
+		this.strokePaint.setAntiAlias(true)
+		this.glowPaint = new Paint()
+		this.glowPaint.setAntiAlias(true)
+		this.setWillNotDraw(false)
+		this.setClickable(false)
+		this.setFocusable(false)
+	}
+
+	setAppearance(variant: string, active: boolean, disabled: boolean): void {
+		this.variant = variant
+		this.active = active
+		this.disabled = disabled
+		this.invalidate()
+	}
+
+	override onDraw(canvas: Canvas): void {
+		super.onDraw(canvas)
+		const width = this.getWidth().toFloat()
+		const height = this.getHeight().toFloat()
+		if (width <= 0.0.toFloat() || height <= 0.0.toFloat()) return
+
+		const minSide = width < height ? width : height
+		const centerX = width / 2.0.toFloat()
+		const centerY = height / 2.0.toFloat()
+		const faceRadius = minSide * 0.405.toFloat()
+		const shadowRadius = minSide * 0.430.toFloat()
+
+		this.drawShadow(canvas, centerX, centerY, shadowRadius)
+		this.drawFace(canvas, centerX, centerY, faceRadius)
+		this.drawRims(canvas, centerX, centerY, faceRadius)
+	}
+
+	private drawShadow(canvas: Canvas, centerX: Float, centerY: Float, radius: Float): void {
+		const shadowAlpha = this.disabled ? 28 : (this.active || this.variant == 'primary' ? 82 : 48)
+		const shadowColor = this.active || this.variant == 'primary' || this.variant == 'softPurple'
+			? Color.argb(shadowAlpha, 104, 66, 168)
+			: Color.argb(shadowAlpha, 39, 45, 58)
+		this.glowPaint.setStyle(Paint.Style.FILL)
+		this.glowPaint.setShader(new RadialGradient(
+			centerX,
+			centerY + radius * 0.28.toFloat(),
+			radius * 1.05.toFloat(),
+			shadowColor,
+			Color.TRANSPARENT,
+			Shader.TileMode.CLAMP
+		))
+		const rect = new RectF(
+			centerX - radius * 1.08.toFloat(),
+			centerY - radius * 0.30.toFloat(),
+			centerX + radius * 1.08.toFloat(),
+			centerY + radius * 1.18.toFloat()
+		)
+		canvas.drawOval(rect, this.glowPaint)
+		this.glowPaint.setShader(null)
+	}
+
+	private drawFace(canvas: Canvas, centerX: Float, centerY: Float, radius: Float): void {
+		let top = depthColor('#FFFFFF')
+		let bottom = depthColor('#EEF1F5')
+		if (this.disabled) {
+			top = depthColor('#F8F9FB')
+			bottom = depthColor('#E8ECF2')
+		} else if (this.variant == 'primary' || this.active) {
+			top = depthColor('#D9B5FF')
+			bottom = depthColor('#7D43D6')
+		} else if (this.variant == 'softPurple') {
+			top = depthColor('#FBF7FF')
+			bottom = depthColor('#EBDCFF')
+		}
+
+		this.fillPaint.setStyle(Paint.Style.FILL)
+		this.fillPaint.setShader(new LinearGradient(
+			centerX,
+			centerY - radius,
+			centerX,
+			centerY + radius,
+			top,
+			bottom,
+			Shader.TileMode.CLAMP
+		))
+		canvas.drawCircle(centerX, centerY, radius, this.fillPaint)
+		this.fillPaint.setShader(null)
+	}
+
+	private drawRims(canvas: Canvas, centerX: Float, centerY: Float, radius: Float): void {
+		this.strokePaint.setStyle(Paint.Style.STROKE)
+		this.strokePaint.setStrokeWidth(1.0.toFloat())
+		this.strokePaint.setColor(this.disabled ? depthColor('#D6DCE5') : depthColor('#FFFFFF'))
+		canvas.drawCircle(centerX, centerY - radius * 0.018.toFloat(), radius - 0.6.toFloat(), this.strokePaint)
+
+		this.strokePaint.setColor(this.variant == 'primary' || this.active ? Color.argb(82, 78, 38, 145) : Color.argb(52, 92, 102, 118))
+		canvas.drawArc(
+			new RectF(centerX - radius + 1.0.toFloat(), centerY - radius + 1.0.toFloat(), centerX + radius - 1.0.toFloat(), centerY + radius - 1.0.toFloat()),
+			24.0.toFloat(),
+			132.0.toFloat(),
+			false,
+			this.strokePaint
+		)
+	}
+}
+
+export class NativeDepthIconButton {
+	private $element: UniNativeViewElement
+	private buttonView: NativeDepthIconButtonView | null = null
+
+	constructor(element: UniNativeViewElement) {
+		this.$element = element
+		this.bindView()
+	}
+
+	private bindView() {
+		const activity = this.$element.getAndroidActivity()
+		if (activity == null) return
+		const view = new NativeDepthIconButtonView(activity)
+		view.setBackgroundColor(Color.TRANSPARENT)
+		view.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		this.buttonView = view
+		this.$element.bindAndroidView(view)
+	}
+
+	setAppearance(variant: string, active: boolean, disabled: boolean): void {
+		this.buttonView?.setAppearance(variant, active, disabled)
+	}
+
+	destroy(): void {
+		this.buttonView = null
+	}
+}

@@ -1,0 +1,37 @@
+{
+	"id": "vibego-background-probe",
+	"displayName": "VibeGo Background Probe",
+	"version": "0.0.1",
+	"description": "Android lock-screen heartbeat and alarm playback probe for VibeGo.",
+	"keywords": [
+		"vibego",
+		"background",
+		"foreground-service",
+		"alarm"
+	],
+	"uni_modules": {
+		"dependencies": [],
+		"encrypt": [],
+		"platforms": {
+			"cloud": {
+				"tcb": "n",
+				"aliyun": "n"
+			},
+			"client": {
+				"Vue": {
+					"vue2": "n",
+					"vue3": "y"
+				},
+				"App": {
+					"app-android": "y",
+					"app-ios": "n"
+				},
+				"H5-mobile": {
+					"Safari": "n",
+					"Android Browser": "n"
+				},
+				"mp-weixin": "n"
+			}
+		}
+	}
+}

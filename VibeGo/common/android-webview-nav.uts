@@ -1,0 +1,117 @@
+export type WebViewNavResult = {
+	ok: boolean
+	canGoBack: boolean
+	canGoForward: boolean
+	error: string
+}
+
+// #ifdef APP-ANDROID
+import Rect from 'android.graphics.Rect'
+import View from 'android.view.View'
+import ViewGroup from 'android.view.ViewGroup'
+import WebView from 'android.webkit.WebView'
+
+let bestWebView: WebView | null = null
+let bestScore = 0
+
+function emptyResult(error: string): WebViewNavResult {
+	return { ok: false, canGoBack: false, canGoForward: false, error }
+}
+
+function intersectionArea(a: Rect, b: Rect): Int {
+	const left = a.left > b.left ? a.left : b.left
+	const top = a.top > b.top ? a.top : b.top
+	const right = a.right < b.right ? a.right : b.right
+	const bottom = a.bottom < b.bottom ? a.bottom : b.bottom
+	if (right <= left || bottom <= top) return 0
+	return (right - left) * (bottom - top)
+}
+
+function scanWebViews(view: View, target: Rect): void {
+	if (view instanceof WebView) {
+		const rect = new Rect()
+		const visible = view.getGlobalVisibleRect(rect)
+		if (visible) {
+			const score = intersectionArea(rect, target)
+			if (score > bestScore) {
+				bestScore = score
+				bestWebView = view as WebView
+			}
+		}
+	}
+	if (view instanceof ViewGroup) {
+		const group = view as ViewGroup
+		const childCount = group.getChildCount()
+		for (let index: Int = 0; index < childCount; index++) {
+			const child = group.getChildAt(index)
+			if (child != null) scanWebViews(child, target)
+		}
+	}
+}
+
+function findEmbeddedWebView(left: number, top: number, width: number, height: number, layoutWidth: number, layoutHeight: number): WebView | null {
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return null
+	const decor = activity.getWindow().getDecorView()
+	const decorWidth = decor.getWidth()
+	const decorHeight = decor.getHeight()
+	if (decorWidth <= 0 || decorHeight <= 0 || layoutWidth <= 0 || layoutHeight <= 0 || width <= 0 || height <= 0) return null
+
+	const decorRect = new Rect()
+	decor.getGlobalVisibleRect(decorRect)
+	const scale = decorWidth.toDouble() / layoutWidth
+	const targetLeft = decorRect.left + Math.round(left * scale).toInt()
+	const targetTop = decorRect.top + Math.round(top * scale).toInt()
+	const targetRight = targetLeft + Math.round(width * scale).toInt()
+	const targetBottom = targetTop + Math.round(height * scale).toInt()
+	const target = new Rect(targetLeft, targetTop, targetRight, targetBottom)
+
+	bestWebView = null
+	bestScore = 0
+	scanWebViews(decor, target)
+	return bestWebView
+}
+// #endif
+
+export function controlEmbeddedWebView(action: string, left: number, top: number, width: number, height: number, layoutWidth: number, layoutHeight: number): WebViewNavResult {
+	// #ifdef APP-ANDROID
+	try {
+		const webView = findEmbeddedWebView(left, top, width, height, layoutWidth, layoutHeight)
+		if (webView == null) return emptyResult('未找到当前 WebView')
+
+		let didAct = false
+		if (action == 'status') {
+			didAct = true
+		} else if (action == 'back') {
+			if (webView.canGoBack()) {
+				webView.goBack()
+				didAct = true
+			}
+		} else if (action == 'forward') {
+			if (webView.canGoForward()) {
+				webView.goForward()
+				didAct = true
+			}
+		} else if (action == 'reload') {
+			webView.reload()
+			didAct = true
+		} else {
+			return { ok: false, canGoBack: webView.canGoBack(), canGoForward: webView.canGoForward(), error: '未知 WebView 操作' }
+		}
+
+		return {
+			ok: didAct,
+			canGoBack: webView.canGoBack(),
+			canGoForward: webView.canGoForward(),
+			error: didAct ? '' : '当前网页没有可执行的导航历史',
+		}
+	} catch (error) {
+		console.log('[vibego-webview-nav]', 'control failed', error)
+		return emptyResult('WebView 导航失败')
+	}
+	// #endif
+
+	// #ifndef APP-ANDROID
+	return emptyResult('当前平台不支持 WebView 导航')
+	// #endif
+}

@@ -1,0 +1,4 @@
+export const GLOBAL_VOICE_ROUTE_DROP = 'drop'
+export const GLOBAL_VOICE_ROUTE_ANNOTATION = 'annotation'
+export const GLOBAL_VOICE_ROUTE_CHAT = 'chat'
+export const GLOBAL_VOICE_ROUTE_ASSISTANT = 'assistant'

@@ -1,0 +1,7 @@
+export class NativeDepthIconButton {
+	constructor(_element: UniNativeViewElement) {}
+
+	setAppearance(_variant: string, _active: boolean, _disabled: boolean): void {}
+
+	destroy(): void {}
+}

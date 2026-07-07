@@ -1,0 +1,193 @@
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import Intent from 'android.content.Intent'
+import Uri from 'android.net.Uri'
+import Settings from 'android.provider.Settings'
+import Build from 'android.os.Build'
+// #endif
+
+import { requestProjectionConsent, getProjectionStatus, captureProjectionFrame, stopProjectionSession, type ProjectionActionResult, type ProjectionStatus, type ScreenCaptureFrameResult as NativeScreenCaptureFrameResult } from '@/uni_modules/vibego-background-probe'
+
+export type ScreenCapability = {
+	overlayGranted: boolean
+	captureSupported: boolean
+	capturePermissionRequested: boolean
+	projectionAuthorized: boolean
+	projectionActive: boolean
+	message: string
+	lastError: string
+}
+
+export type ScreenCaptureFrameResult = {
+	ok: boolean
+	path: string
+	width: number
+	height: number
+	timestamp: string
+	error: string
+	capability: ScreenCapability
+}
+
+// #ifdef APP-ANDROID
+function appContext(): Context | null {
+	return UTSAndroid.getAppContext()
+}
+
+function overlayGrantedAndroid(): boolean {
+	const context = appContext()
+	if (context == null) return false
+	if (Build.VERSION.SDK_INT < 23) return true
+	return Settings.canDrawOverlays(context)
+}
+
+function fromProjectionStatus(status: ProjectionStatus): ScreenCapability {
+	return {
+		overlayGranted: overlayGrantedAndroid(),
+		captureSupported: status.captureSupported,
+		capturePermissionRequested: status.capturePermissionRequested,
+		projectionAuthorized: status.projectionAuthorized,
+		projectionActive: status.projectionActive,
+		message: status.message,
+		lastError: status.lastError,
+	}
+}
+
+function fromProjectionAction(result: ProjectionActionResult): ScreenCapability {
+	return fromProjectionStatus(result.status)
+}
+
+function emptyCapability(message: string): ScreenCapability {
+	return {
+		overlayGranted: overlayGrantedAndroid(),
+		captureSupported: false,
+		capturePermissionRequested: false,
+		projectionAuthorized: false,
+		projectionActive: false,
+		message,
+		lastError: message,
+	}
+}
+// #endif
+
+export function getScreenCapability(done: (result: ScreenCapability) => void): void {
+	// #ifdef APP-ANDROID
+	getProjectionStatus((status) => {
+		done(fromProjectionStatus(status))
+	})
+	// #endif
+
+	// #ifndef APP-ANDROID
+	done({
+		overlayGranted: false,
+		captureSupported: false,
+		capturePermissionRequested: false,
+		projectionAuthorized: false,
+		projectionActive: false,
+		message: '当前平台不支持 Android MediaProjection',
+		lastError: '当前平台不支持 Android MediaProjection',
+	})
+	// #endif
+}
+
+export function openOverlaySettings(): boolean {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	const activity = UTSAndroid.getUniActivity()
+	if (context == null || activity == null) return false
+	try {
+		const intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+		intent.setData(Uri.parse('package:' + context.getPackageName()))
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-screen]', 'open overlay settings failed', error)
+		try {
+			const fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+			fallback.setData(Uri.parse('package:' + context.getPackageName()))
+			fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+			activity.startActivity(fallback)
+			return true
+		} catch (_) {
+			return false
+		}
+	}
+	// #endif
+	return false
+}
+
+export function requestCapturePermission(done: (result: ScreenCapability) => void): void {
+	// #ifdef APP-ANDROID
+	requestProjectionConsent((result) => {
+		done(fromProjectionAction(result))
+	})
+	// #endif
+
+	// #ifndef APP-ANDROID
+	done({
+		overlayGranted: false,
+		captureSupported: false,
+		capturePermissionRequested: false,
+		projectionAuthorized: false,
+		projectionActive: false,
+		message: '当前平台不支持 Android MediaProjection',
+		lastError: '当前平台不支持 Android MediaProjection',
+	})
+	// #endif
+}
+
+export function captureOnce(done: (result: ScreenCaptureFrameResult) => void): void {
+	// #ifdef APP-ANDROID
+	captureProjectionFrame((result: NativeScreenCaptureFrameResult) => {
+		done({
+			ok: result.ok,
+			path: result.path,
+			width: result.width,
+			height: result.height,
+			timestamp: result.timestamp,
+			error: result.error,
+			capability: fromProjectionStatus(result.status),
+		})
+	})
+	// #endif
+
+	// #ifndef APP-ANDROID
+	done({
+		ok: false,
+		path: '',
+		width: 0,
+		height: 0,
+		timestamp: '',
+		error: '当前平台不支持 Android MediaProjection',
+		capability: {
+			overlayGranted: false,
+			captureSupported: false,
+			capturePermissionRequested: false,
+			projectionAuthorized: false,
+			projectionActive: false,
+			message: '当前平台不支持 Android MediaProjection',
+			lastError: '当前平台不支持 Android MediaProjection',
+		},
+	})
+	// #endif
+}
+
+export function stopCaptureSession(done: (result: ScreenCapability) => void): void {
+	// #ifdef APP-ANDROID
+	stopProjectionSession((result) => {
+		done(fromProjectionAction(result))
+	})
+	// #endif
+
+	// #ifndef APP-ANDROID
+	done({
+		overlayGranted: false,
+		captureSupported: false,
+		capturePermissionRequested: false,
+		projectionAuthorized: false,
+		projectionActive: false,
+		message: '当前平台不支持 Android MediaProjection',
+		lastError: '当前平台不支持 Android MediaProjection',
+	})
+	// #endif
+}

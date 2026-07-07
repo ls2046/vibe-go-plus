@@ -1,0 +1,24 @@
+import { type Point, type Segment } from './index-types.uts'
+
+export function annotationSegmentStyle(segment: Segment, stageWidth: number, stageHeight: number): string {
+	const width = stageWidth > 0 ? stageWidth : 1
+	const height = stageHeight > 0 ? stageHeight : 1
+	const startX = segment.x1 * width
+	const startY = segment.y1 * height
+	const endX = segment.x2 * width
+	const endY = segment.y2 * height
+	const dx = endX - startX
+	const dy = endY - startY
+	const length = Math.sqrt((dx * dx) + (dy * dy))
+	const angle = Math.atan2(dy, dx) * 180 / Math.PI
+	const safeLength = Math.ceil(length) + 2
+	return 'left:' + startX.toString() + 'px;top:' + (startY - 3).toString() + 'px;width:' + safeLength.toString() + 'px;transform:rotate(' + angle.toString() + 'deg);transform-origin:0 50%;'
+}
+
+export function annotationPointStyle(dot: Point, stageWidth: number, stageHeight: number): string {
+	const width = stageWidth > 0 ? stageWidth : 1
+	const height = stageHeight > 0 ? stageHeight : 1
+	const left = (dot.x * width) - 4
+	const top = (dot.y * height) - 4
+	return 'left:' + left.toString() + 'px;top:' + top.toString() + 'px;'
+}

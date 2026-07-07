@@ -1,0 +1,68 @@
+// #ifdef APP-ANDROID
+import Intent from 'android.content.Intent'
+import Uri from 'android.net.Uri'
+import Settings from 'android.provider.Settings'
+// #endif
+
+function openIntent(intent: Intent): boolean {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return false
+	try {
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-open]', 'start-failed', error)
+		return false
+	}
+	// #endif
+	return false
+}
+
+export function openExternalUri(uriText: string): boolean {
+	// #ifdef APP-ANDROID
+	if (uriText.length == 0) return false
+	const intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uriText))
+	intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+	return openIntent(intent)
+	// #endif
+	return false
+}
+
+export function openSystemSettings(): boolean {
+	// #ifdef APP-ANDROID
+	const intent = new Intent(Settings.ACTION_SETTINGS)
+	intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+	return openIntent(intent)
+	// #endif
+	return false
+}
+
+export function openBluetoothSettings(): boolean {
+	// #ifdef APP-ANDROID
+	const intent = new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+	intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+	return openIntent(intent)
+	// #endif
+	return false
+}
+
+export function openLocationSettings(): boolean {
+	// #ifdef APP-ANDROID
+	const intent = new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+	intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+	return openIntent(intent)
+	// #endif
+	return false
+}
+
+export function openGeoLocation(latitude: number, longitude: number, label: string): boolean {
+	// #ifdef APP-ANDROID
+	const query = latitude.toString() + ',' + longitude.toString()
+	const uriText = label.length > 0 ? 'geo:' + query + '?q=' + query + '(' + Uri.encode(label) + ')' : 'geo:' + query + '?q=' + query
+	const intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uriText))
+	intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+	return openIntent(intent)
+	// #endif
+	return false
+}

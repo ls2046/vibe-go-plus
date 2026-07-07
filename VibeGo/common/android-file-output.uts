@@ -1,0 +1,155 @@
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import Intent from 'android.content.Intent'
+import Uri from 'android.net.Uri'
+import FileProvider from 'androidx.core.content.FileProvider'
+import File from 'java.io.File'
+import FileOutputStream from 'java.io.FileOutputStream'
+import Environment from 'android.os.Environment'
+// #endif
+
+export type FileOutputResult = {
+	ok: boolean
+	path: string
+	message: string
+}
+
+// #ifdef APP-ANDROID
+function appContext(): Context | null {
+	return UTSAndroid.getAppContext()
+}
+
+function authority(context: Context): string {
+	return context.getPackageName() + '.fileprovider'
+}
+
+function uriForFile(context: Context, path: string): Uri | null {
+	if (path.length == 0) return null
+	const file = new File(path)
+	if (!file.exists()) return null
+	return FileProvider.getUriForFile(context, authority(context), file)
+}
+
+function guessMime(path: string): string {
+	const lower = path.toLowerCase()
+	if (lower.endsWith('.png')) return 'image/png'
+	if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+	if (lower.endsWith('.gif')) return 'image/gif'
+	if (lower.endsWith('.webp')) return 'image/webp'
+	if (lower.endsWith('.pdf')) return 'application/pdf'
+	if (lower.endsWith('.txt') || lower.endsWith('.md') || lower.endsWith('.json') || lower.endsWith('.log')) return 'text/plain'
+	if (lower.endsWith('.mp4')) return 'video/mp4'
+	if (lower.endsWith('.mp3')) return 'audio/mpeg'
+	return '*/*'
+}
+
+function writeText(path: string, text: string): boolean {
+	try {
+		const output = new FileOutputStream(new File(path))
+		try {
+			output.write(text.toByteArray())
+			output.flush()
+		} finally {
+			output.close()
+		}
+		return true
+	} catch (error) {
+		console.log('[vibego-file-output]', 'write failed', error)
+		return false
+	}
+}
+
+function testFilePath(context: Context): string {
+	const dir = new File(context.getCacheDir(), 'vibego-output')
+	if (!dir.exists()) dir.mkdirs()
+	return new File(dir, 'vibego-output-test.txt').getAbsolutePath()
+}
+// #endif
+
+export function createTestOutputFile(done: (result: FileOutputResult) => void): void {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, path: '', message: 'Context 不可用' })
+		return
+	}
+	const path = testFilePath(context)
+	const ok = writeText(path, 'VibeGo file output test\n' + new Date().toISOString() + '\n')
+	done({
+		ok,
+		path: ok ? path : '',
+		message: ok ? '已生成测试文件' : '测试文件写入失败',
+	})
+	// #endif
+}
+
+export function shareFile(path: string): boolean {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	const activity = UTSAndroid.getUniActivity()
+	if (context == null || activity == null) return false
+	const uri = uriForFile(context, path)
+	if (uri == null) return false
+	try {
+		const intent = new Intent(Intent.ACTION_SEND)
+		intent.setType(guessMime(path))
+		intent.putExtra(Intent.EXTRA_STREAM, uri)
+		intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+		const chooser = Intent.createChooser(intent, '分享 VibeGo 文件')
+		chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(chooser)
+		return true
+	} catch (error) {
+		console.log('[vibego-file-output]', 'share failed', error)
+		return false
+	}
+	// #endif
+	return false
+}
+
+export function openFile(path: string): boolean {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	const activity = UTSAndroid.getUniActivity()
+	if (context == null || activity == null) return false
+	const uri = uriForFile(context, path)
+	if (uri == null) return false
+	try {
+		const intent = new Intent(Intent.ACTION_VIEW)
+		intent.setDataAndType(uri, guessMime(path))
+		intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		activity.startActivity(intent)
+		return true
+	} catch (error) {
+		console.log('[vibego-file-output]', 'open failed', error)
+		return false
+	}
+	// #endif
+	return false
+}
+
+export function saveTextToDownloads(fileName: string, text: string, done: (result: FileOutputResult) => void): void {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, path: '', message: 'Context 不可用' })
+		return
+	}
+	try {
+		const downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+		if (!downloads.exists()) downloads.mkdirs()
+		const safeName = fileName.length > 0 ? fileName.replace('/', '_').replace('\\', '_') : 'vibego-output.txt'
+		const file = new File(downloads, safeName)
+		const ok = writeText(file.getAbsolutePath(), text)
+		done({
+			ok,
+			path: ok ? file.getAbsolutePath() : '',
+			message: ok ? '已保存到 Downloads' : '保存 Downloads 失败，可能被系统存储策略拦截',
+		})
+	} catch (error) {
+		console.log('[vibego-file-output]', 'save downloads failed', error)
+		done({ ok: false, path: '', message: '保存 Downloads 失败，建议改用系统分享/保存面板' })
+	}
+	// #endif
+}

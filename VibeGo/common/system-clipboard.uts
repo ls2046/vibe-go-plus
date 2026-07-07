@@ -1,0 +1,50 @@
+export type ClipboardFirstInfo = {
+	text: string
+	page: string
+	createdAt: string
+}
+
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import ClipboardManager from 'android.content.ClipboardManager'
+// #endif
+
+function emitClipboardFirst(text: string, page: string): void {
+	const info = {
+		text,
+		page,
+		createdAt: new Date().toISOString(),
+	} as ClipboardFirstInfo
+	uni.$emit('mobile-clipboard-first', info)
+	console.log('[vibego-clipboard]', 'first', 'page=' + page + ' length=' + text.length.toString())
+}
+
+export function readSystemClipboardFirst(page: string): string {
+	const text = readSystemClipboardText(page)
+	if (text.length > 0) emitClipboardFirst(text, page)
+	return text
+}
+
+export function readSystemClipboardText(page: string): string {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) return ''
+	try {
+		const manager = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+		if (!manager.hasPrimaryClip()) return ''
+		const clip = manager.getPrimaryClip()
+		if (clip == null || clip.getItemCount() == 0) return ''
+		const value = clip.getItemAt(0).coerceToText(activity)
+		if (value == null) return ''
+		const text = value.toString()
+		return text
+	} catch (error) {
+		console.log('[vibego-clipboard]', 'read-failed', 'page=' + page, error)
+		return ''
+	}
+	// #endif
+
+	// #ifndef APP-ANDROID
+	return ''
+	// #endif
+}

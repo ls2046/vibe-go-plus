@@ -1,0 +1,441 @@
+export type UploadRecord = {
+	name: string
+	path: string
+	url: string
+	mimeType: string
+	size: number
+	sourceUri: string
+	createdAt: string
+}
+
+export type AnnotationRecord = {
+	imagePath: string
+	jsonPath: string
+	createdAt: string
+}
+
+export type AppLinkRecord = {
+	action: string
+	source: string
+	uri: string
+	mimeType: string
+	text: string
+	createdAt: string
+}
+
+export type AssistantRecord = {
+	threadId: string
+	projectId: string
+	title: string
+	initializedAt: string
+}
+
+export type PendingAnnotation = {
+	imagePath: string
+	jsonPath: string
+	sourcePage: string
+	sourceTitle: string
+}
+
+export type AnnotationSourceContext = {
+	projectId: string
+	threadId: string
+	title: string
+	isAssistant: boolean
+	boundAt: string
+	sourceUrl: string
+}
+
+const SERVER_URL_KEY = 'vibego.serverUrl'
+const DEV_URL_KEY = 'vibego.devUrl'
+const UPLOADS_KEY = 'vibego.uploads'
+const ANNOTATIONS_KEY = 'vibego.annotations'
+const ACTIVE_PROJECT_KEY = 'vibego.activeProjectId'
+const ACTIVE_THREAD_KEY = 'vibego.activeThreadId'
+const ACTIVE_RAIL_MODE_KEY = 'vibego.activeRailMode'
+const THREAD_LIST_COLLAPSED_KEY = 'vibego.threadListCollapsed'
+const RIGHT_MODE_KEY = 'vibego.rightMode'
+const COMPOSER_DRAFT_KEY = 'vibego.composerDraft'
+const PENDING_ANNOTATION_KEY = 'vibego.pendingAnnotation'
+const ANNOTATION_SOURCE_KEY = 'vibego.annotationSource'
+const APP_LINK_KEY = 'vibego.appLink'
+const ASSISTANT_KEY = 'vibego.assistant'
+const ASR_MODE_KEY = 'vibego.asrMode'
+const ASR_MODE_EXPLICIT_KEY = 'vibego.asrModeExplicit'
+const PENDING_GLOBAL_VOICE_TEXT_KEY = 'vibego.pendingGlobalVoiceText'
+const APP_THEME_KEY = 'vibego.appTheme'
+export const DEFAULT_SERVER_URL = 'http://127.0.0.1:8790'
+export const DEFAULT_ASR_MODE = 'cloud'
+export const DEFAULT_APP_THEME = 'light'
+const LEGACY_SERVER_URLS = new Array<string>()
+
+export function getServerUrl(): string {
+	const value = uni.getStorageSync(SERVER_URL_KEY)
+	if (typeof value == 'string' && value.length > 0) {
+		const normalized = normalizeServerUrl(value)
+		const migrated = migrateLegacyServerUrl(normalized)
+		if (migrated != normalized) {
+			uni.setStorageSync(SERVER_URL_KEY, migrated)
+		}
+		return migrated
+	}
+	return DEFAULT_SERVER_URL
+}
+
+export function setServerUrl(url: string): void {
+	uni.setStorageSync(SERVER_URL_KEY, migrateLegacyServerUrl(normalizeServerUrl(url)))
+}
+
+export function normalizeServerUrl(url: string): string {
+	let value = url.trim()
+	if (value.length > 0 && !value.startsWith('http://') && !value.startsWith('https://')) {
+		value = 'http://' + value
+	}
+	while (value.endsWith('/')) {
+		value = value.substring(0, value.length - 1)
+	}
+	return value
+}
+
+function migrateLegacyServerUrl(url: string): string {
+	for (let index: Int = 0; index < LEGACY_SERVER_URLS.length; index++) {
+		if (url == LEGACY_SERVER_URLS[index]) return DEFAULT_SERVER_URL
+	}
+	if (url.indexOf(':3990') < 0) return url
+	return url.replace(':3990', ':8790')
+}
+
+export function getDevUrl(): string {
+	const value = uni.getStorageSync(DEV_URL_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setDevUrl(url: string): void {
+	uni.setStorageSync(DEV_URL_KEY, url.trim())
+}
+
+export function apiUrl(path: string): string {
+	const base = getServerUrl()
+	if (base.length == 0) return ''
+	return base + (path.startsWith('/') ? path : '/' + path)
+}
+
+export function wsUrl(path: string): string {
+	const base = getServerUrl()
+	if (base.length == 0) return ''
+	let value = base
+	if (value.startsWith('https://')) {
+		value = 'wss://' + value.substring(8)
+	} else if (value.startsWith('http://')) {
+		value = 'ws://' + value.substring(7)
+	}
+	return value + (path.startsWith('/') ? path : '/' + path)
+}
+
+export function getActiveProjectId(): string {
+	const value = uni.getStorageSync(ACTIVE_PROJECT_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setActiveProjectId(projectId: string): void {
+	uni.setStorageSync(ACTIVE_PROJECT_KEY, projectId)
+}
+
+export function getActiveThreadId(): string {
+	const value = uni.getStorageSync(ACTIVE_THREAD_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setActiveThreadId(threadId: string): void {
+	uni.setStorageSync(ACTIVE_THREAD_KEY, threadId)
+}
+
+export function getActiveRailMode(): string {
+	const value = uni.getStorageSync(ACTIVE_RAIL_MODE_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setActiveRailMode(mode: string): void {
+	uni.setStorageSync(ACTIVE_RAIL_MODE_KEY, mode)
+}
+
+export function getThreadListCollapsed(): boolean {
+	return uni.getStorageSync(THREAD_LIST_COLLAPSED_KEY) === true
+}
+
+export function setThreadListCollapsed(collapsed: boolean): void {
+	uni.setStorageSync(THREAD_LIST_COLLAPSED_KEY, collapsed)
+}
+
+export function getRightMode(): string {
+	const value = uni.getStorageSync(RIGHT_MODE_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setRightMode(mode: string): void {
+	uni.setStorageSync(RIGHT_MODE_KEY, mode)
+}
+
+export function getComposerDraft(): string {
+	const value = uni.getStorageSync(COMPOSER_DRAFT_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setComposerDraft(text: string): void {
+	uni.setStorageSync(COMPOSER_DRAFT_KEY, text)
+}
+
+export function getAppTheme(): string {
+	const value = uni.getStorageSync(APP_THEME_KEY)
+	return typeof value == 'string' ? normalizeAppTheme(value) : DEFAULT_APP_THEME
+}
+
+export function setAppTheme(theme: string): void {
+	uni.setStorageSync(APP_THEME_KEY, normalizeAppTheme(theme))
+}
+
+export function normalizeAppTheme(theme: string): string {
+	if (theme == 'night') return 'night'
+	return DEFAULT_APP_THEME
+}
+
+export function getPendingAnnotation(): PendingAnnotation | null {
+	const value = uni.getStorageSync(PENDING_ANNOTATION_KEY)
+	if (value == null || value == '') return null
+	try {
+		return JSON.parse(value as string) as PendingAnnotation
+	} catch (_) {
+		return null
+	}
+}
+
+export function setPendingAnnotation(value: PendingAnnotation | null): void {
+	if (value == null) {
+		uni.removeStorageSync(PENDING_ANNOTATION_KEY)
+	} else {
+		uni.setStorageSync(PENDING_ANNOTATION_KEY, JSON.stringify(value))
+	}
+}
+
+export function getAnnotationSourceContext(): AnnotationSourceContext {
+	const raw = uni.getStorageSync(ANNOTATION_SOURCE_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		return emptyAnnotationSourceContext()
+	}
+	try {
+		return toAnnotationSourceContext(JSON.parse(raw) as UTSJSONObject)
+	} catch (_) {
+		return emptyAnnotationSourceContext()
+	}
+}
+
+export function setAnnotationSourceContext(value: AnnotationSourceContext): void {
+	uni.setStorageSync(ANNOTATION_SOURCE_KEY, JSON.stringify(value))
+}
+
+export function clearAnnotationSourceContext(): void {
+	uni.removeStorageSync(ANNOTATION_SOURCE_KEY)
+}
+
+export function emptyAnnotationSourceContext(): AnnotationSourceContext {
+	return {
+		projectId: '',
+		threadId: '',
+		title: '',
+		isAssistant: false,
+		boundAt: '',
+		sourceUrl: '',
+	}
+}
+
+function toAnnotationSourceContext(item: UTSJSONObject): AnnotationSourceContext {
+	return {
+		projectId: item.getString('projectId') ?? '',
+		threadId: item.getString('threadId') ?? '',
+		title: item.getString('title') ?? '',
+		isAssistant: item.getBoolean('isAssistant') == true,
+		boundAt: item.getString('boundAt') ?? '',
+		sourceUrl: item.getString('sourceUrl') ?? '',
+	}
+}
+
+export function getAsrMode(): string {
+	const explicit = uni.getStorageSync(ASR_MODE_EXPLICIT_KEY)
+	if (explicit !== true) {
+		return DEFAULT_ASR_MODE
+	}
+	const value = uni.getStorageSync(ASR_MODE_KEY)
+	if (typeof value == 'string') {
+		return normalizeAsrMode(value)
+	}
+	return DEFAULT_ASR_MODE
+}
+
+export function setAsrMode(mode: string): void {
+	uni.setStorageSync(ASR_MODE_KEY, DEFAULT_ASR_MODE)
+	uni.setStorageSync(ASR_MODE_EXPLICIT_KEY, true)
+}
+
+export function getPendingGlobalVoiceText(): string {
+	const value = uni.getStorageSync(PENDING_GLOBAL_VOICE_TEXT_KEY)
+	return typeof value == 'string' ? value : ''
+}
+
+export function setPendingGlobalVoiceText(text: string): void {
+	const value = text.trim()
+	if (value.length == 0) {
+		uni.removeStorageSync(PENDING_GLOBAL_VOICE_TEXT_KEY)
+	} else {
+		uni.setStorageSync(PENDING_GLOBAL_VOICE_TEXT_KEY, value)
+	}
+}
+
+export function normalizeAsrMode(mode: string): string {
+	if (mode == 'cloud') return 'cloud'
+	return DEFAULT_ASR_MODE
+}
+
+export function getAssistantRecord(): AssistantRecord {
+	const raw = uni.getStorageSync(ASSISTANT_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		return emptyAssistantRecord()
+	}
+	try {
+		return toAssistantRecord(JSON.parse(raw) as UTSJSONObject)
+	} catch (_) {
+		return emptyAssistantRecord()
+	}
+}
+
+export function setAssistantRecord(record: AssistantRecord): void {
+	uni.setStorageSync(ASSISTANT_KEY, JSON.stringify(record))
+}
+
+export function emptyAssistantRecord(): AssistantRecord {
+	return {
+		threadId: '',
+		projectId: '',
+		title: '',
+		initializedAt: '',
+	}
+}
+
+function toAssistantRecord(item: UTSJSONObject): AssistantRecord {
+	return {
+		threadId: item.getString('threadId') ?? '',
+		projectId: item.getString('projectId') ?? '',
+		title: item.getString('title') ?? '',
+		initializedAt: item.getString('initializedAt') ?? '',
+	}
+}
+
+export function saveUploadRecord(record: UploadRecord): void {
+	const records = getUploadRecords()
+	records.unshift(record)
+	while (records.length > 30) records.pop()
+	uni.setStorageSync(UPLOADS_KEY, JSON.stringify(records))
+	uni.$emit('mobile-upload-added', record)
+}
+
+export function getUploadRecords(): Array<UploadRecord> {
+	const raw = uni.getStorageSync(UPLOADS_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		return new Array<UploadRecord>()
+	}
+	try {
+		const parsed = JSON.parse(raw) as Array<any>
+		const records = new Array<UploadRecord>()
+		for (let index: Int = 0; index < parsed.length; index++) {
+			const item = parsed[index] as UTSJSONObject
+			records.push(toUploadRecord(item))
+		}
+		return records
+	} catch (_) {
+		return new Array<UploadRecord>()
+	}
+}
+
+function toUploadRecord(item: UTSJSONObject): UploadRecord {
+	return {
+		name: item.getString('name') ?? '',
+		path: item.getString('path') ?? '',
+		url: item.getString('url') ?? '',
+		mimeType: item.getString('mimeType') ?? '',
+		size: item.getNumber('size') ?? 0,
+		sourceUri: item.getString('sourceUri') ?? '',
+		createdAt: item.getString('createdAt') ?? '',
+	}
+}
+
+export function saveAnnotationRecord(record: AnnotationRecord): void {
+	const records = getAnnotationRecords()
+	records.unshift(record)
+	while (records.length > 30) records.pop()
+	uni.setStorageSync(ANNOTATIONS_KEY, JSON.stringify(records))
+	uni.$emit('mobile-annotation-added', record)
+}
+
+export function getAnnotationRecords(): Array<AnnotationRecord> {
+	const raw = uni.getStorageSync(ANNOTATIONS_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		return new Array<AnnotationRecord>()
+	}
+	try {
+		const parsed = JSON.parse(raw) as Array<any>
+		const records = new Array<AnnotationRecord>()
+		for (let index: Int = 0; index < parsed.length; index++) {
+			const item = parsed[index] as UTSJSONObject
+			records.push(toAnnotationRecord(item))
+		}
+		return records
+	} catch (_) {
+		return new Array<AnnotationRecord>()
+	}
+}
+
+function toAnnotationRecord(item: UTSJSONObject): AnnotationRecord {
+	return {
+		imagePath: item.getString('imagePath') ?? '',
+		jsonPath: item.getString('jsonPath') ?? '',
+		createdAt: item.getString('createdAt') ?? '',
+	}
+}
+
+export function saveAppLinkRecord(record: AppLinkRecord): void {
+	uni.setStorageSync(APP_LINK_KEY, JSON.stringify(record))
+	uni.$emit('mobile-app-link', record)
+}
+
+export function getAppLinkRecord(): AppLinkRecord {
+	const raw = uni.getStorageSync(APP_LINK_KEY)
+	if (typeof raw != 'string' || raw.length == 0) {
+		return emptyAppLinkRecord()
+	}
+	try {
+		return toAppLinkRecord(JSON.parse(raw) as UTSJSONObject)
+	} catch (_) {
+		return emptyAppLinkRecord()
+	}
+}
+
+export function emptyAppLinkRecord(): AppLinkRecord {
+	return {
+		action: '',
+		source: '',
+		uri: '',
+		mimeType: '',
+		text: '',
+		createdAt: '',
+	}
+}
+
+function toAppLinkRecord(item: UTSJSONObject): AppLinkRecord {
+	return {
+		action: item.getString('action') ?? '',
+		source: item.getString('source') ?? '',
+		uri: item.getString('uri') ?? '',
+		mimeType: item.getString('mimeType') ?? '',
+		text: item.getString('text') ?? '',
+		createdAt: item.getString('createdAt') ?? '',
+	}
+}

@@ -1,0 +1,132 @@
+// #ifdef APP-ANDROID
+import Context from 'android.content.Context'
+import File from 'java.io.File'
+import MediaRecorder from 'android.media.MediaRecorder'
+// #endif
+
+export type VoiceRecordResult = {
+	ok: boolean
+	path: string
+	durationMs: number
+	error: string
+}
+
+// #ifdef APP-ANDROID
+function appContext(): Context | null {
+	return UTSAndroid.getAppContext()
+}
+
+function recordCachePath(context: Context): string {
+	const dir = new File(context.getCacheDir(), 'vibego-voice')
+	if (!dir.exists()) dir.mkdirs()
+	return new File(dir, `record-${Date.now()}.m4a`).getAbsolutePath()
+}
+
+let activeRecorder: MediaRecorder | null = null
+let activeRecordPath: string = ''
+let activeStartAt: number = 0
+// #endif
+
+export function requestRecordAudioPermission(done: (granted: boolean) => void): void {
+	// #ifdef APP-ANDROID
+	const activity = UTSAndroid.getUniActivity()
+	if (activity == null) {
+		done(false)
+		return
+	}
+	UTSAndroid.requestSystemPermission(activity, ['android.permission.RECORD_AUDIO'], function (allRight: boolean, _grantedList: string[]) {
+		done(allRight)
+	}, function (_doNotAskAgain: boolean, _grantedList: string[]) {
+		done(false)
+	})
+	// #endif
+	// #ifndef APP-ANDROID
+	done(false)
+	// #endif
+}
+
+export function startVoiceRecording(done: (result: VoiceRecordResult) => void): void {
+	// #ifdef APP-ANDROID
+	const context = appContext()
+	if (context == null) {
+		done({ ok: false, path: '', durationMs: 0, error: 'Context 不可用' })
+		return
+	}
+	if (activeRecorder != null) {
+		done({ ok: false, path: '', durationMs: 0, error: '已有录音正在进行' })
+		return
+	}
+	const recordPath = recordCachePath(context)
+	try {
+		const recorder = new MediaRecorder()
+		recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+		recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+		recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+		recorder.setOutputFile(recordPath)
+		recorder.prepare()
+		recorder.start()
+		activeRecorder = recorder
+		activeRecordPath = recordPath
+		activeStartAt = Date.now()
+		done({ ok: true, path: recordPath, durationMs: 0, error: '' })
+	} catch (error) {
+		activeRecorder = null
+		activeRecordPath = ''
+		activeStartAt = 0
+		done({ ok: false, path: '', durationMs: 0, error: '启动录音失败：' + error })
+	}
+	// #endif
+	// #ifndef APP-ANDROID
+	done({ ok: false, path: '', durationMs: 0, error: '仅 Android 支持录音' })
+	// #endif
+}
+
+export function stopVoiceRecording(done: (result: VoiceRecordResult) => void): void {
+	// #ifdef APP-ANDROID
+	const recorder = activeRecorder
+	if (recorder == null) {
+		done({ ok: false, path: '', durationMs: 0, error: '没有正在进行的录音' })
+		return
+	}
+	const recordPath = activeRecordPath
+	const durationMs = Date.now() - activeStartAt
+	try {
+		recorder.stop()
+		recorder.release()
+	} catch (error) {
+		console.log('[vibego-voice-record]', 'stop failed', error)
+	}
+	activeRecorder = null
+	activeRecordPath = ''
+	activeStartAt = 0
+	done({ ok: true, path: recordPath, durationMs: durationMs, error: '' })
+	// #endif
+	// #ifndef APP-ANDROID
+	done({ ok: false, path: '', durationMs: 0, error: '仅 Android 支持录音' })
+	// #endif
+}
+
+export function cancelVoiceRecording(): void {
+	// #ifdef APP-ANDROID
+	const recorder = activeRecorder
+	if (recorder != null) {
+		try {
+			recorder.stop()
+			recorder.release()
+		} catch (error) {
+			console.log('[vibego-voice-record]', 'cancel failed', error)
+		}
+		activeRecorder = null
+	}
+	if (activeRecordPath.length > 0) {
+		try {
+			const file = new File(activeRecordPath)
+			if (file.exists()) file.delete()
+		} catch (error) {
+			console.log('[vibego-voice-record]', 'delete temp failed', error)
+		}
+		activeRecordPath = ''
+	}
+	activeStartAt = 0
+	// #endif
+}

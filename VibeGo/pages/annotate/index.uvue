@@ -1,0 +1,528 @@
+<template>
+	<view class="annotate-page" :style="pageStyle">
+		<view class="topbar" :style="topbarStyle" v-if="!submitting">
+			<view class="topbar-btn" @click="goBack">
+				<text class="topbar-btn-text">←</text>
+			</view>
+			<button class="tool-btn" :class="tool == 'rect' ? 'active' : ''" type="default" @click="setTool('rect')">Rect</button>
+			<button class="tool-btn" :class="tool == 'pen' ? 'active' : ''" type="default" @click="setTool('pen')">Pen</button>
+			<button class="tool-btn" :class="tool == 'text' ? 'active' : ''" type="default" @click="setTool('text')">Text</button>
+			<button class="tool-btn" type="default" @click="undo">撤销</button>
+			<button class="tool-btn" type="default" @click="clearAll">清空</button>
+			<button class="tool-btn submit" type="default" @click="submit">提交</button>
+		</view>
+
+		<scroll-view class="stage-wrap" :style="stageWrapStyle" scroll-y="true" scroll-x="true">
+			<view v-if="imageLoadError" class="error-state" :style="stageWrapStyle">
+				<text class="error-title">截图加载失败</text>
+				<text class="error-desc">无法显示截图，请返回重试</text>
+			</view>
+			<view v-else class="stage" :style="stageStyle" @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">
+				<image class="shot" :src="imagePath" mode="widthFix" @load="onImageLoad" @error="onImageError"></image>
+				<view v-for="(rect, index) in rects" :key="'r' + index" class="rect" :style="rectStyle(rect)"></view>
+				<view v-if="draftRect != null" class="rect draft" :style="draftRectStyle()"></view>
+				<view v-for="(dot, index) in dots" :key="'d' + index" class="dot" :style="dotStyle(dot)"></view>
+				<view v-for="(text, index) in texts" :key="'t' + index" class="text-mark" :style="textStyle(text)">
+					<text class="text-mark-content">{{ text.text }}</text>
+				</view>
+			</view>
+		</scroll-view>
+
+		<view v-if="tool == 'text' && !submitting" class="text-panel">
+			<input class="text-input" v-model="textValue" placeholder="输入文字后点截图位置" />
+		</view>
+
+		<view class="submitting-mask" v-if="submitting">
+			<text class="submitting-text">正在生成标注截图…</text>
+		</view>
+	</view>
+</template>
+
+<script lang="uts">
+import { uploadAnnotation } from '../../common/mobile-api.uts'
+import { readSystemClipboardFirst } from '../../common/system-clipboard.uts'
+import { captureCurrentWindow } from '../../common/android-shot.uts'
+import { setPendingAnnotation, type PendingAnnotation } from '../../common/app-state.uts'
+
+type Point = {
+	x: number
+	y: number
+}
+
+type RectMark = {
+	x: number
+	y: number
+	width: number
+	height: number
+}
+
+type TextMark = {
+	x: number
+	y: number
+	text: string
+}
+
+export default {
+	data() {
+		return {
+			imagePath: '',
+			annotatedImagePath: '',
+			sourceUrl: '',
+			sourceType: 'web',
+			sourcePage: '',
+			sourceTitle: '',
+			tool: 'rect',
+			rects: new Array<RectMark>(),
+			dots: new Array<Point>(),
+			texts: new Array<TextMark>(),
+			draftRect: null as RectMark | null,
+			startPoint: null as Point | null,
+			textValue: '这里需要修改',
+			submitting: false,
+			lastImagePath: '',
+			lastJsonPath: '',
+			stageWidth: 0,
+			stageHeight: 0,
+			imageNaturalWidth: 0,
+			imageNaturalHeight: 0,
+			imageLoadError: false,
+			windowWidth: 375,
+			windowHeight: 812,
+			safeTop: 0,
+			safeBottom: 0,
+		}
+	},
+	computed: {
+		pageStyle(): string {
+			return 'padding-bottom:' + this.safeBottom.toString() + 'px;'
+		},
+		stageWrapStyle(): string {
+			return 'width:' + this.windowWidth.toString() + 'px;'
+		},
+		stageStyle(): string {
+			if (this.stageHeight > 0) {
+				return 'width:' + this.windowWidth.toString() + 'px;height:' + this.stageHeight.toString() + 'px;'
+			}
+			return 'width:' + this.windowWidth.toString() + 'px;'
+		},
+		topbarStyle(): string {
+			const inset = this.toolbarTopInset()
+			const height = this.toolbarHeight()
+			return 'padding-top:' + inset.toString() + 'px;height:' + height.toString() + 'px;'
+		},
+	},
+	onLoad(options: UTSJSONObject) {
+		const rawImage = options.getString('image') ?? ''
+		const rawSourceUrl = options.getString('sourceUrl') ?? ''
+		const rawSourceType = options.getString('sourceType') ?? 'web'
+		const rawSourcePage = options.getString('sourcePage') ?? ''
+		const rawSourceTitle = options.getString('sourceTitle') ?? ''
+		this.imagePath = decodeURIComponent(rawImage) ?? ''
+		this.sourceUrl = decodeURIComponent(rawSourceUrl) ?? ''
+		this.sourceType = decodeURIComponent(rawSourceType) ?? 'web'
+		this.sourcePage = decodeURIComponent(rawSourcePage) ?? ''
+		this.sourceTitle = decodeURIComponent(rawSourceTitle) ?? ''
+		if (this.imagePath.length == 0) {
+			this.imageLoadError = true
+		}
+		this.refreshLayout()
+	},
+	onShow() {
+		this.refreshLayout()
+		readSystemClipboardFirst('pages/annotate/index')
+	},
+	onResize(options: OnResizeOptions) {
+		const size = options.size
+		if (size.windowWidth > 0) {
+			this.windowWidth = size.windowWidth
+			if (this.imageNaturalWidth > 0 && this.imageNaturalHeight > 0) {
+				this.stageWidth = size.windowWidth
+				this.stageHeight = Math.round(size.windowWidth * this.imageNaturalHeight / this.imageNaturalWidth)
+			}
+		}
+		if (size.windowHeight > 0) this.windowHeight = size.windowHeight
+		try {
+			const info = uni.getSystemInfoSync()
+			this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+		} catch (_) {}
+	},
+	methods: {
+		refreshLayout() {
+			try {
+				const info = uni.getSystemInfoSync()
+				this.windowWidth = info.windowWidth
+				this.windowHeight = info.windowHeight
+				const statusBarHeight = info.statusBarHeight
+				this.safeTop = statusBarHeight > 0 ? statusBarHeight : 0
+				this.safeBottom = this.bottomSafeInset(info.safeAreaInsets.bottom, info.windowBottom)
+			} catch (_) {}
+		},
+		bottomSafeInset(safeAreaBottom: number, windowBottom: number): number {
+			const bottom = safeAreaBottom > windowBottom ? safeAreaBottom : windowBottom
+			return bottom > 0 ? bottom : 0
+		},
+		toolbarTopInset(): number {
+			if (this.safeTop <= 0) return 0
+			return this.safeTop > 2 ? 2 : this.safeTop
+		},
+		toolbarHeight(): number {
+			return 44 + this.toolbarTopInset()
+		},
+		setTool(value: string) {
+			this.tool = value
+		},
+		onImageLoad(e: ImageLoadEvent) {
+			this.imageLoadError = false
+			const detail = e.detail
+			const naturalW = detail.width
+			const naturalH = detail.height
+			this.imageNaturalWidth = naturalW
+			this.imageNaturalHeight = naturalH
+			if (naturalW > 0 && naturalH > 0) {
+				this.stageWidth = this.windowWidth
+				this.stageHeight = Math.round(this.windowWidth * naturalH / naturalW)
+			}
+		},
+		onImageError(_e: ImageErrorEvent) {
+			this.imageLoadError = true
+		},
+		touchPoint(event: UniTouchEvent): Point {
+			const touch: UniTouch = event.touches[0]
+			const w = this.stageWidth > 0 ? this.stageWidth : this.windowWidth
+			const h = this.stageHeight > 0 ? this.stageHeight : 1
+			const stageTopOffset = this.toolbarHeight()
+			const offsetX = touch.clientX
+			const offsetY = touch.clientY - stageTopOffset
+			return {
+				x: w > 0 ? offsetX / w : 0,
+				y: h > 0 ? offsetY / h : 0,
+			}
+		},
+		onTouchStart(event: UniTouchEvent) {
+			const point = this.touchPoint(event)
+			if (this.tool == 'text') {
+				this.texts.push({ x: point.x, y: point.y, text: this.textValue })
+				return
+			}
+			this.startPoint = point
+			if (this.tool == 'rect') {
+				this.draftRect = { x: point.x, y: point.y, width: 0.001, height: 0.001 }
+			}
+			if (this.tool == 'pen') {
+				this.dots.push(point)
+			}
+		},
+		onTouchMove(event: UniTouchEvent) {
+			const point = this.touchPoint(event)
+			if (this.tool == 'rect' && this.startPoint != null && this.draftRect != null) {
+				const start = this.startPoint
+				if (start != null) {
+					this.draftRect = {
+						x: Math.min(start.x, point.x),
+						y: Math.min(start.y, point.y),
+						width: Math.abs(point.x - start.x),
+						height: Math.abs(point.y - start.y),
+					}
+				}
+			}
+			if (this.tool == 'pen') {
+				this.dots.push(point)
+			}
+		},
+		onTouchEnd(_: UniTouchEvent) {
+			if (this.tool == 'rect' && this.draftRect != null) {
+				const rect = this.draftRect
+				if (rect != null && rect.width > 0.005 && rect.height > 0.005) {
+					this.rects.push(rect)
+				}
+			}
+			this.draftRect = null
+			this.startPoint = null
+		},
+		undo() {
+			if (this.texts.length > 0) {
+				this.texts.pop()
+				return
+			}
+			if (this.dots.length > 0) {
+				this.dots.pop()
+				return
+			}
+			if (this.rects.length > 0) {
+				this.rects.pop()
+			}
+		},
+		clearAll() {
+			this.rects = new Array<RectMark>()
+			this.dots = new Array<Point>()
+			this.texts = new Array<TextMark>()
+		},
+		submit() {
+			if (this.submitting) return
+			if (this.rects.length == 0 && this.dots.length == 0 && this.texts.length == 0) {
+				uni.showToast({ title: '请先标注', icon: 'none' })
+				return
+			}
+
+			this.submitting = true
+
+			setTimeout(() => {
+				// #ifdef APP-ANDROID
+				captureCurrentWindow((result) => {
+					this.submitting = false
+					if (!result.ok) {
+						uni.showToast({ title: result.error.length > 0 ? result.error : '合成截图失败', icon: 'none' })
+						return
+					}
+					this.annotatedImagePath = result.path
+					this.doUpload()
+				})
+				// #endif
+
+				// #ifndef APP-ANDROID
+				this.submitting = false
+				uni.showToast({ title: '当前平台不支持截图合成', icon: 'none' })
+				// #endif
+			}, 50)
+		},
+		doUpload() {
+			const payload = JSON.stringify({
+				sourceType: this.sourceType,
+				sourcePage: this.sourcePage,
+				sourceTitle: this.sourceTitle,
+				sourceUrl: this.sourceUrl,
+				baseImagePath: this.imagePath,
+				annotatedImagePath: this.annotatedImagePath,
+				annotations: {
+					rects: this.rects,
+					dots: this.dots,
+					texts: this.texts,
+				},
+				createdAt: new Date().toISOString(),
+			})
+			uploadAnnotation(this.annotatedImagePath, payload, (ok, record, error) => {
+				if (ok && record != null) {
+					this.lastImagePath = record.imagePath
+					this.lastJsonPath = record.jsonPath
+					uni.showToast({ title: '已发送给 AI', icon: 'success' })
+					const pending: PendingAnnotation = {
+						imagePath: record.imagePath,
+						jsonPath: record.jsonPath,
+						sourcePage: this.sourcePage,
+						sourceTitle: this.sourceTitle,
+					}
+					setPendingAnnotation(pending)
+					const pages = getCurrentPages() as Array<any>
+					if (pages.length > 1) {
+						uni.navigateBack()
+					} else {
+						uni.reLaunch({ url: '/pages/index/index' })
+					}
+				} else {
+					uni.showToast({ title: error, icon: 'none' })
+				}
+			})
+		},
+		goBack() {
+			const pages = getCurrentPages() as Array<any>
+			if (pages.length > 1) {
+				uni.navigateBack()
+			} else {
+				uni.reLaunch({ url: '/pages/index/index' })
+			}
+		},
+		rectStyle(rect: RectMark): string {
+			const w = this.stageWidth > 0 ? this.stageWidth : this.windowWidth
+			const h = this.stageHeight
+			const leftPx = Math.round(rect.x * w)
+			const topPx = Math.round(rect.y * h)
+			const widthPx = Math.round(rect.width * w)
+			const heightPx = Math.round(rect.height * h)
+			return 'left:' + leftPx.toString() + 'px;top:' + topPx.toString() + 'px;width:' + widthPx.toString() + 'px;height:' + heightPx.toString() + 'px;'
+		},
+		draftRectStyle(): string {
+			if (this.draftRect == null) return ''
+			const rect = this.draftRect
+			if (rect == null) return ''
+			return this.rectStyle(rect)
+		},
+		dotStyle(dot: Point): string {
+			const w = this.stageWidth > 0 ? this.stageWidth : this.windowWidth
+			const h = this.stageHeight
+			const leftPx = Math.round(dot.x * w) - 3
+			const topPx = Math.round(dot.y * h) - 3
+			return 'left:' + leftPx.toString() + 'px;top:' + topPx.toString() + 'px;'
+		},
+		textStyle(text: TextMark): string {
+			const w = this.stageWidth > 0 ? this.stageWidth : this.windowWidth
+			const h = this.stageHeight
+			const leftPx = Math.round(text.x * w)
+			const topPx = Math.round(text.y * h)
+			return 'left:' + leftPx.toString() + 'px;top:' + topPx.toString() + 'px;'
+		},
+	},
+}
+</script>
+
+<style>
+	.annotate-page {
+		flex: 1;
+		background-color: #f8fafc;
+	}
+
+	.topbar {
+		padding: 0 12px;
+		flex-direction: row;
+		align-items: center;
+		background-color: #ffffff;
+	}
+
+	.topbar-btn {
+		width: 36px;
+		height: 36px;
+		border-radius: 9px;
+		align-items: center;
+		justify-content: center;
+		background-color: #f1f5f9;
+	}
+
+	.topbar-btn-text {
+		font-size: 18px;
+		color: #0f172a;
+	}
+
+	.tool-btn {
+		margin-left: 6px;
+		border-radius: 8px;
+		font-size: 12px;
+		background-color: #f1f5f9;
+		color: #0f172a;
+	}
+
+	.tool-btn.active,
+	.tool-btn.submit,
+	.send-ai {
+		background-color: #8b6f4e;
+		color: #ffffff;
+	}
+
+	.stage-wrap {
+		flex: 1;
+	}
+
+	.stage {
+		position: relative;
+		background-color: #000000;
+		overflow: hidden;
+	}
+
+	.shot {
+		width: 100%;
+	}
+
+	.rect {
+		position: absolute;
+		border-width: 3px;
+		border-style: solid;
+		border-color: #00a6ff;
+		background-color: rgba(0, 166, 255, 0.08);
+	}
+
+	.rect.draft {
+		border-color: #f9c846;
+	}
+
+	.dot {
+		position: absolute;
+		width: 6px;
+		height: 6px;
+		border-radius: 999px;
+		background-color: #00a6ff;
+	}
+
+	.text-mark {
+		position: absolute;
+		padding: 4px 6px;
+		border-radius: 8px;
+		background-color: rgba(249, 200, 70, 0.92);
+	}
+
+	.text-mark-content {
+		font-size: 13px;
+		font-weight: 700;
+		color: #101820;
+	}
+
+	.text-panel {
+		padding: 10px 12px;
+		background-color: #ffffff;
+	}
+
+	.text-input {
+		height: 40px;
+		padding: 0 10px;
+		border-radius: 8px;
+		background-color: #f1f5f9;
+		font-size: 14px;
+		color: #0f172a;
+	}
+
+	.result-panel {
+		padding: 12px;
+		background-color: #ffffff;
+	}
+
+	.result-title {
+		font-size: 14px;
+		font-weight: 700;
+		color: #0f172a;
+	}
+
+	.result-path {
+		margin-top: 4px;
+		font-size: 12px;
+		color: #65717b;
+	}
+
+	.send-ai {
+		margin-top: 8px;
+		border-radius: 999px;
+		font-size: 13px;
+	}
+
+	.error-state {
+		align-items: center;
+		justify-content: center;
+		background-color: #f1f5f9;
+	}
+
+	.error-title {
+		font-size: 18px;
+		font-weight: 700;
+		color: #ef4444;
+	}
+
+	.error-desc {
+		margin-top: 6px;
+		font-size: 13px;
+		color: #64748b;
+	}
+
+	.submitting-mask {
+		position: absolute;
+		left: 0;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		background-color: rgba(0, 0, 0, 0.48);
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+
+	.submitting-text {
+		font-size: 15px;
+		font-weight: 700;
+		color: #ffffff;
+	}
+</style>

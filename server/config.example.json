@@ -1,0 +1,16 @@
+{
+  "port": 8790,
+  "host": "0.0.0.0",
+  "token": "",
+  "codexBundleId": "com.openai.codex",
+  "codexBackend": "cdp",
+  "codexCdpEndpoint": "http://127.0.0.1:9222",
+  "allowGuiFallback": false,
+  "projects": [
+    {
+      "id": "my-project",
+      "name": "My Project",
+      "path": "/absolute/path/to/my-project"
+    }
+  ]
+}

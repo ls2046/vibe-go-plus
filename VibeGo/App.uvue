@@ -1,0 +1,65 @@
+<script lang="uts">
+	import { installGlobalFileDrop, uninstallGlobalFileDrop } from './common/android-drop.uts'
+	import { installGlobalVoiceLongPress, uninstallGlobalVoiceLongPress } from './common/android-global-voice.uts'
+	import { applyAndroidSystemBars } from './common/android-system-bars.uts'
+	import { handleSystemShareIntent } from './common/android-share.uts'
+
+	// #ifdef APP-ANDROID || APP-HARMONY
+	let firstBackTime = 0
+	// #endif
+	function refreshSystemBars() {
+		applyAndroidSystemBars()
+		setTimeout(() => {
+			applyAndroidSystemBars()
+		}, 120)
+		setTimeout(() => {
+			applyAndroidSystemBars()
+		}, 600)
+	}
+	export default {
+		onLaunch() {
+			refreshSystemBars()
+			installGlobalFileDrop()
+			installGlobalVoiceLongPress()
+			handleSystemShareIntent()
+		},
+		onShow() {
+			refreshSystemBars()
+			installGlobalVoiceLongPress()
+			handleSystemShareIntent()
+			uni.$emit('vibego-app-show')
+		},
+		// #ifdef APP-ANDROID || APP-HARMONY
+		onLastPageBackPress() {
+			if (firstBackTime == 0) {
+				uni.showToast({
+					title: '再按一次退出应用',
+					position: 'bottom',
+				})
+				firstBackTime = Date.now()
+				setTimeout(() => {
+					firstBackTime = 0
+				}, 2000)
+			} else if (Date.now() - firstBackTime < 2000) {
+				firstBackTime = Date.now()
+				uni.exit()
+			}
+		},
+		// #endif
+		onExit() {
+			uninstallGlobalVoiceLongPress()
+			uninstallGlobalFileDrop()
+		},
+	}
+</script>
+
+<style>
+	/*每个页面公共css */
+	.uni-row {
+		flex-direction: row;
+	}
+
+	.uni-column {
+		flex-direction: column;
+	}
+</style>
